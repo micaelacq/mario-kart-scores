@@ -11,9 +11,9 @@ Open it in Safari on your iPhone and choose **Share → Add to Home Screen**.
 
 - **12 or 24 player** modes.
 - **Formats:** FFA, 2v2, 3v3, 4v4, 6v6, plus 8v8 and 12v12 in 24-player mode.
-- **Tag length** from 1 to 4 characters (default 2). Leading `[`, `(` and symbols are skipped.
+- **Tag length** from 1 to 4 characters (default 2). The tag is simply the first characters of the name, symbols included (e.g. `/` for "/ StouFa2").
 - **Camera or Photos**: pick several photos at once when 24 players need more than one screenshot.
-- **Works on photos of the TV**: finds the results rows from the score column, then reads each row's name and score separately (handles glare, tilt, dark text on coloured bars and the white text on your own row). Score digits are matched against the game's digit shapes, measured from real results-screen photos.
+- **Works on photos of the TV**: finds the results rows from the score column, then reads each row's name and score separately (handles glare, tilt, dark text on coloured bars, white text on dark see-through bars, your own highlighted row, and names made of symbols like "//"). Score digits are matched against the game's digit shapes, measured from real results-screen photos.
 - When you scan race after race, players are matched by name; once the lobby is full, a misread name is paired with the most likely player instead of being added twice, and each player's name is the reading seen most often across scans.
 - Reads only each player's **name** and the **score on the right**. Ignores the position number, character icon and the up/down/dot movement markers.
 - Names under each team are shown without the tag (it's already the team heading).

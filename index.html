@@ -136,7 +136,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
       <span id="tagLen">2</span>
       <button id="tagPlus" aria-label="Longer tag">+</button>
     </div>
-    <p class="hint">The tag is the start of each player's name (e.g. <b>AB</b>Luigi → team AB). Leading <b>[</b> or <b>(</b> is skipped. To fix a wrong tag, edit the player's name.</p>
+    <p class="hint">The tag is the first characters of each player's name, symbols included (e.g. <b>AB</b>Luigi → team AB, <b>/</b> StouFa2 → team /). To fix a wrong tag, edit the player's name.</p>
   </section>
 
   <section class="card">
@@ -219,18 +219,16 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 1800); }
   const formatLabel = n => n === 1 ? 'FFA' : `${n}v${n}`;
 
-  function autoTag(name) {
-    const stripped = name.replace(/^[^\p{L}\p{N}]+/u, '');
-    return Array.from(stripped).slice(0, state.tagLen).join('').toUpperCase();
-  }
+  // The tag is simply the first characters of the name, symbols included (e.g. "/" for "/ StouFa2").
+  const rawTag = name => Array.from(name.trim()).slice(0, state.tagLen).join('').trim();
+  function autoTag(name) { return rawTag(name).toUpperCase(); }
   const tagOf = p => autoTag(p.name) || '?';
   // Name without its tag ("AB Luigi" -> "Luigi"), used under the team heading so the tag isn't repeated.
   function shortName(name) {
-    const stripped = name.replace(/^[^\p{L}\p{N}]+/u, '');
-    const rest = Array.from(stripped).slice(state.tagLen).join('').replace(/^[^\p{L}\p{N}]+/u, '').trim();
+    const rest = Array.from(name.trim()).slice(state.tagLen).join('').replace(/^[\s.,:;'"-]+/u, '').trim();
     return rest || name;
   }
-  const normKey = s => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  const normKey = s => s.toLowerCase().replace(/[\s.,:;'"`]/gu, '');
 
   function similarity(a, b) {
     if (a === b) return 1;
@@ -262,7 +260,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   function nameTeam(team) {
     const counts = new Map();
     for (const m of team.members) {
-      const raw = Array.from(m.name.replace(/^[^\p{L}\p{N}]+/u, '')).slice(0, state.tagLen).join('');
+      const raw = rawTag(m.name);
       const t = raw.toUpperCase() || '?';
       const c = counts.get(t) || { n: 0, caps: 0 };
       c.n++; if (raw === t) c.caps++;
@@ -511,6 +509,30 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     return c;
   }
   let ADAPTIVE_T = 22;
+
+  // For screens with white text on dark see-through bars (no team colours): keep only near-white,
+  // colourless pixels. The game scene behind the bars is darkened by them, so it drops out.
+  function prepWhite(img, shear = 0) {
+    const target = 2000;
+    const scale = Math.min(3, target / Math.max(img.naturalWidth, img.naturalHeight)) || 1;
+    const iw = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
+    const w = iw + Math.round(shear * h);
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+    ctx.setTransform(1, 0, shear, 1, 0, 0);
+    ctx.drawImage(img, 0, 0, iw, h);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const d = ctx.getImageData(0, 0, w, h), px = d.data;
+    for (let i = 0; i < px.length; i += 4) {
+      const mx = Math.max(px[i], px[i + 1], px[i + 2]), mn = Math.min(px[i], px[i + 1], px[i + 2]);
+      const v = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114 > 175 && mx - mn < 70) ? 0 : 255;
+      px[i] = px[i + 1] = px[i + 2] = v;
+    }
+    ctx.putImageData(d, 0, 0);
+    c._scale = scale; c._shear = shear;
+    return c;
+  }
   const PAGE_PSM = '11';   // sparse text: find words anywhere, rows are rebuilt from word positions
 
   function prepCanvas(img, invert, shear = 0) {
@@ -586,8 +608,9 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     // The game's font has no brackets, bars or "!", so one of those right before a letter at the start of a
     // name is a misread "I" (e.g. "[JDaisy" -> "IJDaisy").
     n = n.trim().replace(/^[\[\(|!l](?=\p{Lu})/u, 'I');
+    // Keep symbols players use in names and tags (/ * # ...); drop reader noise (quotes, commas, bars).
     return n.replace(/[|¦_~`"“”]/g, ' ').replace(/\s+/g, ' ')
-      .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '').trim();
+      .replace(/^[^\p{L}\p{N}\/\\*#]+/u, '').replace(/[^\p{L}\p{N}\/\\*#)\]]+$/u, '').trim();
   }
 
   // Tesseract result -> rows of words [{text, x0, x1, y}]
@@ -621,7 +644,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
       }
       if (idx < 1) continue;
       const left = words.slice(0, idx);
-      if (!left.some(w => letters(w.text) >= minLetters)) continue;
+      if (!left.some(w => letters(w.text) >= minLetters || (minLetters === 1 && /^[\/\\*#]+$/.test(w.text)))) continue;
       pre.push({ left, score, y: words[idx].y, box: words[idx] });
     }
     if (!pre.length) return [];
@@ -635,13 +658,23 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     let nameX = null;
     if (pre.length >= 3) {
       const pts = [];
-      pre.forEach((p, r) => p.left.forEach(w => { if (letters(w.text) >= 2 && !PLACEMENT.test(w.text)) pts.push({ x: w.x0, y: p.y, r }); }));
+      pre.forEach((p, r) => p.left.forEach(w => {
+        if ((letters(w.text) >= 1 || /^[\/\\*#]+$/.test(w.text)) && !PLACEMENT.test(w.text)) pts.push({ x: w.x0, y: p.y, r, len: Math.min(5, letters(w.text)) });
+      }));
       pts.sort((a, b) => a.x - b.x);
+      const ctol = charW * 0.9;
       let best = null;
       for (let i = 0; i < pts.length; i++) {
-        const members = pts.filter(q => Math.abs(q.x - pts[i].x) <= tol);
-        const rowsHit = new Set(members.map(q => q.r)).size;
-        if (!best || rowsHit > best.rowsHit) best = { rowsHit, members };
+        // one point per row: the word starting closest to this candidate column
+        const byRow = new Map();
+        for (const q of pts) {
+          const d = Math.abs(q.x - pts[i].x); if (d > ctol) continue;
+          if (!byRow.has(q.r) || d < Math.abs(byRow.get(q.r).x - pts[i].x)) byRow.set(q.r, q);
+        }
+        const members = [...byRow.values()];
+        // most rows wins; real words (several letters) beat short icon junk on a tie
+        const score = members.length * 10 + members.reduce((s, q) => s + q.len, 0) / Math.max(1, members.length);
+        if (!best || score > best.score) best = { score, rowsHit: members.length, members };
       }
       if (best && best.rowsHit >= Math.max(2, pre.length * 0.4)) {
         // Fit x = a + b*y through the column so a slightly tilted photo still lines up.
@@ -664,16 +697,17 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
         words = p.left.filter(w => w.x1 > nx + charW * 0.2).map(w => {
           if (w.x0 >= nx - charW * 0.6) return w;
           const chars = Array.from(w.text), cw = (w.x1 - w.x0) / Math.max(1, chars.length);
-          const drop = Math.min(chars.length - 1, Math.round((nx - w.x0) / cw));
+          const drop = Math.min(chars.length - 1, Math.floor((nx - w.x0) / cw + 0.2));
           return { ...w, text: chars.slice(drop).join(''), x0: w.x0 + drop * cw };
         });
       }
       if (!words.some(w => letters(w.text) >= 1)) words = p.left;
       words = words.filter(w => !/^\+\d+$/.test(w.text));
-      while (words.length > 1 && (PLACEMENT.test(words[0].text) || letters(words[0].text) === 0)) words.shift();
+      const nameSymbols = t => /^[\/\\*#]+$/.test(t);   // e.g. the "/" in "/ StouFa2", or a name like "//"
+      while (words.length > 1 && (PLACEMENT.test(words[0].text) || (letters(words[0].text) === 0 && !nameSymbols(words[0].text)))) words.shift();
       while (words.length > 1 && isMarker(words[words.length - 1].text)) words.pop();
       const name = cleanName(words.map(w => w.text).join(' '));
-      if (letters(name) < 1 || Array.from(name).length < minLetters) continue;
+      if ((letters(name) < 1 && !/^[\/\\*#]+$/.test(name)) || Array.from(name).length < minLetters) continue;
       const nameBox = { x0: Math.min(...words.map(w => w.x0)), x1: Math.max(...words.map(w => w.x1)),
                         y0: Math.min(...words.map(w => w.y0)), y1: Math.max(...words.map(w => w.y1)) };
       out.push({ name, score: p.score, box: p.box, nameBox });
@@ -692,6 +726,17 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     return merged;
   }
 
+  // Pick a player's name from all readings so far. The reader often misses a name's first character
+  // ("StouFa2" for "/ StouFa2") but rarely invents one, so a reading also gets the votes of readings
+  // that are its ending
+  function bestReading(seen, current) {
+    const keys = Object.keys(seen); if (!keys.length) return null;
+    // (only for readings seen at least twice, so a one-off misread with an extra character can't win)
+    const support = k => seen[k] >= 2 ? keys.reduce((s, k2) => s + (k.endsWith(k2) ? seen[k2] : 0), 0) : seen[k];
+    const rank = k => support(k) * 1000 + (seen[k] || 0) + (k === current ? 0.5 : 0);   // a tie keeps the current name
+    return keys.sort((a, b) => rank(b) - rank(a))[0];
+  }
+
   function applyScan(rows) {
     lastUpdated = new Set();
     let updated = 0, added = 0;
@@ -703,10 +748,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
       p.score = rows[i].score; lastUpdated.add(p.id); rowDone.add(i); playerDone.add(p.id); updated++;
       // names vote across scans: show the reading seen most often (unless the name was typed by hand)
       p.seen = p.seen || {}; p.seen[rows[i].name] = (p.seen[rows[i].name] || 0) + 1;
-      if (!p.manual) {
-        const top = Object.entries(p.seen).sort((a, b) => b[1] - a[1])[0];
-        if (top[1] > (p.seen[p.name] || 0)) p.name = top[0];
-      }
+      if (!p.manual) p.name = bestReading(p.seen, p.name) || p.name;
     };
     // 1. clear name matches, best first, each player at most once
     for (const { i, p, sim } of pairs) if (sim >= 0.75 && !rowDone.has(i) && !playerDone.has(p.id)) take(i, p);
@@ -847,11 +889,13 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     const mr = median(R), mg = median(G), mb = median(B), t = 48;
     const barLum = mr * 0.299 + mg * 0.587 + mb * 0.114;
     const lumAt = i => px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114;
+    // near-white, colourless, and clearly brighter than the bar
+    const isWhite = i => lumAt(i) > Math.max(barLum + 30, 170) && Math.max(px[i], px[i + 1], px[i + 2]) - Math.min(px[i], px[i + 1], px[i + 2]) < 75;
     const build = light => {
       const ink = new Uint8Array(w * h);
       for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
         const i = (y * w + x) * 4; if (!inside(x, y)) continue;
-        ink[y * w + x] = light ? (lumAt(i) > barLum + 60 ? 1 : 0)
+        ink[y * w + x] = light ? (isWhite(i) ? 1 : 0)
                                : (Math.hypot(px[i] - mr, px[i + 1] - mg, px[i + 2] - mb) > t ? 1 : 0);
       }
       for (let y = 0; y < h; y++) {
@@ -863,14 +907,14 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
       if (opts.sides) clearSideBlobs(ink, w, h, shear, iw);
       return ink;
     };
-    let ink = build(false);
+    let ink = build(!!opts.light);
     // Your own row: white text with a dark outline. If most remaining text pixels in the middle of the
     // bar are bright, keep only the white fill, or the outline merges each character into a blob.
     let bright = 0, total = 0;
     for (let y = Math.round(h * 0.25); y < h * 0.75; y++) for (let x = 0; x < w; x++) if (ink[y * w + x]) {
-      total++; if (lumAt((y * w + x) * 4) > barLum + 60) bright++;
+      total++; if (isWhite((y * w + x) * 4)) bright++;
     }
-    if (total > 30 && bright / total > 0.4) ink = build(true);
+    if (!opts.light && total > 30 && bright / total > 0.4) ink = build(true);
     for (let j = 0; j < w * h; j++) { const v = ink[j] ? 0 : 255; px[j * 4] = px[j * 4 + 1] = px[j * 4 + 2] = v; px[j * 4 + 3] = 255; }
     despeckle(px, w, h, Math.round(h * minSpeck));
     let sumY = 0, nBlack = 0, maxX = -1, inkCount = 0;
@@ -931,6 +975,65 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     return c;
   }
 
+  // Connected ink blobs of a black-on-white canvas.
+  function findBlobs(canvas) {
+    const w = canvas.width, h = canvas.height;
+    const px = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+    const ink = new Uint8Array(w * h);
+    for (let j = 0; j < w * h; j++) ink[j] = px[j * 4] < 128 ? 1 : 0;
+    const seen = new Uint8Array(w * h), blobs = [];
+    for (let s0 = 0; s0 < w * h; s0++) {
+      if (!ink[s0] || seen[s0]) continue;
+      const pts = [], stack = [s0]; seen[s0] = 1;
+      let x0 = w, x1 = 0, y0 = h, y1 = 0;
+      while (stack.length) {
+        const q = stack.pop(); pts.push(q);
+        const y = (q / w) | 0, x = q - y * w;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const n = ny * w + nx; if (ink[n] && !seen[n]) { seen[n] = 1; stack.push(n); }
+        }
+      }
+      blobs.push({ pts, x0, x1, y0, y1, w });
+    }
+    return blobs;
+  }
+
+  // A "/" in the game font is a thin stroke leaning right much more than the (straightened) letters.
+  function isSlashBlob(b) {
+    const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
+    if (bh < 8 || bw > bh * 0.65) return false;
+    let my = 0, mx = 0; const n = b.pts.length;
+    for (const q of b.pts) { my += (q / b.w) | 0; mx += q % b.w; }
+    my /= n; mx /= n;
+    let sxy = 0, syy = 0;
+    for (const q of b.pts) { const y = ((q / b.w) | 0) - my, x = (q % b.w) - mx; sxy += x * y; syy += y * y; }
+    const slope = syy ? sxy / syy : 0;      // dx per dy (y grows downwards): a "/" goes left as it goes down
+    return slope < -0.2;
+  }
+
+  // Name crops: replace slash-shaped strokes the text reader misreads (e.g. "//" read as "I" or "n").
+  function fixSlashes(crop, data) {
+    const blobs = findBlobs(crop);
+    if (!blobs.length) return data;
+    const maxH = Math.max(...blobs.map(b => b.y1 - b.y0 + 1));
+    const big = blobs.filter(b => b.y1 - b.y0 + 1 >= maxH * 0.5).sort((a, b) => a.x0 - b.x0);
+    const tall = big.filter(b => b.x0 > crop.width * 0.12);   // skip leftovers of the icon at the far left
+    if (tall.length && tall.length <= 4 && tall.every(isSlashBlob) && letters(data.text) <= 2) {
+      // the whole name is slashes, e.g. "//"
+      const x0 = tall[0].x0, x1 = tall[tall.length - 1].x1;
+      return { ...data, text: '/'.repeat(tall.length), words: [{ text: '/'.repeat(tall.length), confidence: 90, bbox: { x0, x1, y0: 0, y1: 1 } }] };
+    }
+    const words = (data.words || []).map(wd => {
+      const t = wd.text.trim();
+      if (Array.from(t).length !== 1 || !/[Il|f!1\/\[\]J()iljt]/.test(t)) return wd;
+      const inside = big.filter(b => b.x0 >= wd.bbox.x0 - 3 && b.x1 <= wd.bbox.x1 + 3);
+      return inside.length === 1 && isSlashBlob(inside[0]) ? { ...wd, text: '/' } : wd;
+    });
+    return { ...data, words };
+  }
+
   // ---------- Digit templates ----------
   // The score digits on the results screen use the game's own font, which the general text reader
   // often misreads (1/4/7). These are average shapes of each digit (12x18 cells, share of ink per cell),
@@ -988,9 +1091,9 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     return /^\d{1,3}$/.test(text) ? { text, worst } : null;
   }
 
-  async function readScoreAt(w, img, sx0, sx1, y, p) {
+  async function readScoreAt(w, img, sx0, sx1, y, p, light = false) {
     // First choice: match digit shapes against the game's digits.
-    const tc = cropRow(img, sx0, y - p * 0.42, sx1, y + p * 0.42, 0.14, 0.25, 64, { sides: true });
+    const tc = cropRow(img, sx0, y - p * 0.42, sx1, y + p * 0.42, 0.14, 0.25, 64, { sides: true, light });
     const tm = readDigitsByTemplate(tc);
     if (window.__mkDump) window.__mkDump(`s${Math.round(y)}_tmpl_${tm ? tm.text + '_' + tm.worst.toFixed(3) : 'none'}`, tc.toDataURL('image/png'));
     if (tm && tm.worst <= 0.15) return { score: parseInt(tm.text, 10), conf: 95, dy: tc._dy, inkRight: tc._inkRight };
@@ -1000,7 +1103,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     const votes = new Map(); let meta = null;
     for (const [shear, psm] of [[0.2, '6'], [0.08, '6'], [0.2, '7'], [0.08, '7'], [0.14, '6']]) {
       await w.setParameters({ tessedit_pageseg_mode: psm });
-      const crop = cropRow(img, sx0, y - p * 0.42, sx1, y + p * 0.42, shear, 0.25, 64, { sides: true });
+      const crop = cropRow(img, sx0, y - p * 0.42, sx1, y + p * 0.42, shear, 0.25, 64, { sides: true, light });
       const { data } = await w.recognize(crop);
       const t = data.text.replace(/\D/g, '');
       if (window.__mkDump) window.__mkDump(`s${Math.round(y)}_${shear}_${psm}_${t}_${Math.round(data.confidence)}`, crop.toDataURL('image/png'));
@@ -1015,12 +1118,13 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
 
   async function scanByRows(w, img, maxRows) {
     await w.setParameters({ tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: '11' });
-    let col = null;
-    for (const shear of [0, 0.2]) {
-      const canvas = prepAdaptive(img, shear);
+    let col = null, light = false;
+    for (const [prep, shear] of [[prepAdaptive, 0], [prepWhite, 0], [prepAdaptive, 0.2], [prepWhite, 0.2]]) {
+      const canvas = prep(img, shear);
       const { data } = await w.recognize(canvas);
       col = findScoreColumn(data.words || [], canvas);
-      if (col) break;
+      if (window.__mkLog) window.__mkLog('COL ' + prep.name + ' ' + shear + ' ' + JSON.stringify(col && { p: col.pitch, y0: col.y0 }));
+      if (col) { light = prep === prepWhite; break; }   // white text on see-through bars
     }
     if (!col) { await w.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: PAGE_PSM }); return null; }
     const { pitch: p, y0 } = col;
@@ -1037,11 +1141,11 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
         const R = col.rightAt(y);
         const sx0 = Math.max(0, R - L.scoreFrom * p), sx1 = Math.min(W, R - L.scoreTo * p);
         if (sx1 - sx0 < p * 0.8) continue;
-        let r = await readScoreAt(w, img, sx0, sx1, y, p);
+        let r = await readScoreAt(w, img, sx0, sx1, y, p, light);
         // re-centre on the actual text if the row estimate drifted, and read again
         if (r && Math.abs(r.dy) > p * 0.08) {
           y += r.dy;
-          r = (await readScoreAt(w, img, sx0, sx1, y, p)) || r;
+          r = (await readScoreAt(w, img, sx0, sx1, y, p, light)) || r;
         }
         if (window.__mkLog) window.__mkLog('ROW ' + JSON.stringify({ k, y, R, p, score: r && r.score, conf: r && r.conf }));
         if (r && r.conf >= 40) scored.push({ k, y, R, score: r.score, inkRight: r.inkRight });
@@ -1063,11 +1167,11 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
       const rows = [];
       for (const r of run) {
         const nx0 = Math.max(0, r.R - L.nameFrom * p), nx1 = r.R - L.nameTo * p;
-        let crop = cropRow(img, nx0, r.y - p * 0.42, nx1, r.y + p * 0.42);
+        let crop = cropRow(img, nx0, r.y - p * 0.42, nx1, r.y + p * 0.42, 0.2, 0.12, 64, { light });
         // the photo may be slightly rotated, so the name can sit a bit higher/lower than the score
         if (Math.abs(crop._dyBand) > p * 0.05) {
           const ny = r.y + crop._dyBand;
-          crop = cropRow(img, nx0, ny - p * 0.38, nx1, ny + p * 0.38);
+          crop = cropRow(img, nx0, ny - p * 0.38, nx1, ny + p * 0.38, 0.2, 0.12, 64, { light });
         }
         let { data } = await w.recognize(crop);
         if (letters(data.text) < 2) {
@@ -1085,6 +1189,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
           }
           await w.setParameters({ tessedit_pageseg_mode: '7' });
         }
+        data = fixSlashes(crop, data);
         if (window.__mkDump) window.__mkDump(`n${r.k}`, crop.toDataURL('image/png'));
         const unit = crop.height;   // express x in row heights so rows line up with each other
         const words = (data.words || []).map(wd => ({ text: wd.text.trim(), x0: wd.bbox.x0 / unit, x1: wd.bbox.x1 / unit, y0: r.k, y1: r.k + 1, y: r.k }))
@@ -1092,7 +1197,9 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
         words.push({ text: String(r.score), x0: 999, x1: 1000, y0: r.k, y1: r.k + 1, y: r.k });
         rows.push(words);
       }
-      return parseRows(rows, { minNameLetters: 1 }).map(r => ({ name: r.name, score: r.score }));
+      const parsed = parseRows(rows, { minNameLetters: 1 }).map(r => ({ name: r.name, score: r.score }));
+      parsed.rowsWithScores = run.length;
+      return parsed;
     } finally {
       await w.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: PAGE_PSM });
     }
@@ -1120,7 +1227,10 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
         progressBase = pass / passes; progressSpan = 1 / passes;
         $('status').textContent = `Reading photo ${f + 1} of ${files.length}…`;
         const byRows = await scanByRows(w, img, state.mode);
-        if (byRows && byRows.length >= 3) {
+        // use it unless names came out for far fewer rows than scores, or mostly the same junk
+        // (an unfamiliar layout where the name crops miss the names)
+        if (byRows && byRows.length >= 3 && byRows.length >= byRows.rowsWithScores * 0.6
+            && new Set(byRows.map(r => normKey(r.name))).size >= byRows.length * 0.6) {
           best = byRows; bestQuality = Infinity;
           bestText = byRows.map(r => `${r.name}  ${r.score}`).join('\n');
         }
