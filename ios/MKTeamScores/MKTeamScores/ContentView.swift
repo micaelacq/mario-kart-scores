@@ -10,7 +10,7 @@ struct ContentView: View {
     @FocusState private var focusedField: Field?
 
     enum Field: Hashable {
-        case tag(UUID), name(UUID), score(UUID)
+        case name(UUID), score(UUID)
     }
 
     var body: some View {
@@ -98,7 +98,7 @@ struct ContentView: View {
             Stepper(value: $store.tagLength, in: 1...4) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Tag length: \(store.tagLength)")
-                    Text("Characters at the start of each name. Leading [ ( and symbols are skipped.")
+                    Text("The tag is the start of each name (ABLuigi → team AB). Leading [ ( are skipped.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -178,7 +178,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(team.tag).font(.headline.weight(.heavy))
                 if store.teamSize > 1 {
-                    Text(team.members.map { "\($0.name) (\($0.score))" }.joined(separator: " · "))
+                    Text(team.members.map { "\(store.shortName($0.name)) (\($0.score))" }.joined(separator: " · "))
                         .font(.caption).foregroundStyle(.secondary)
                     if team.members.count != store.teamSize {
                         Text("\(team.members.count) player\(team.members.count == 1 ? "" : "s") (expected \(store.teamSize))")
@@ -219,8 +219,7 @@ struct ContentView: View {
     private var playersSection: some View {
         Section {
             HStack(spacing: 8) {
-                Text("TAG").frame(width: 56)
-                Text("NAME").frame(maxWidth: .infinity, alignment: .leading)
+                Text("NAME (TAG FIRST)").frame(maxWidth: .infinity, alignment: .leading)
                 Text("SCORE").frame(width: 64, alignment: .trailing)
             }
             .font(.caption2.weight(.bold))
@@ -250,29 +249,14 @@ struct ContentView: View {
                 Text("\(store.players.count)/\(store.playerCount.rawValue)")
             }
         } footer: {
-            Text("Fix any misread names or scores here — totals update as you type. Edit a tag to override it for that player. Swipe left to remove a player.")
+            Text("Fix any misread names or scores here — totals update as you type. To fix a wrong tag, edit the start of the name. Swipe left to remove a player.")
         }
     }
 
     private func playerRow(_ player: Binding<Player>) -> some View {
         let p = player.wrappedValue
-        let tagBinding = Binding<String>(
-            get: { store.tag(for: p) },
-            set: { store.setTag($0, for: p.id) }
-        )
         let updated = store.lastUpdated.contains(p.id)
         return HStack(spacing: 8) {
-            TextField("Tag", text: tagBinding)
-                .textInputAutocapitalization(.characters)
-                .autocorrectionDisabled()
-                .multilineTextAlignment(.center)
-                .font(.body.weight(.bold))
-                .frame(width: 56)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8)
-                    .stroke(p.tagOverride.isEmpty ? Color.clear : Color.accentColor, lineWidth: 1.5))
-                .focused($focusedField, equals: .tag(p.id))
-
             TextField("Name", text: player.name)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()

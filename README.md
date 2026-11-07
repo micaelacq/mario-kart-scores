@@ -13,8 +13,11 @@ Open it in Safari on your iPhone and choose **Share → Add to Home Screen**.
 - **Formats:** FFA, 2v2, 3v3, 4v4, 6v6, plus 8v8 and 12v12 in 24-player mode.
 - **Tag length** from 1 to 4 characters (default 2). Leading `[`, `(` and symbols are skipped.
 - **Camera or Photos**: pick several photos at once when 24 players need more than one screenshot.
+- Reads only each player's **name** and the **score on the right**. Ignores the position number, character icon and the up/down/dot movement markers.
+- Names under each team are shown without the tag (it's already the team heading).
+- If the reader confuses look-alike characters in a tag (e.g. IJ read as 1J), teams with those tags are merged automatically.
 - Reads each player's **running total**. A new scan updates players already in the list and adds new ones.
-- **Editable player list** for fixing misread names, scores or tags. Standings update as you type.
+- **Editable player list** for fixing misread names or scores (the tag is the start of the name). Standings update as you type.
 - Warns when the number of players or teams doesn't match the selected mode.
 - Copy the standings as text.
 

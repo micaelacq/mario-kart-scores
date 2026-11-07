@@ -97,11 +97,9 @@ input[type=file] { display: none; }
 .empty { color: var(--ink-light); font-size: 14px; text-align: center; padding: 18px 0; }
 /* Player list */
 .plist { display: flex; flex-direction: column; gap: 6px; }
-.prow { display: grid; grid-template-columns: 54px 1fr 64px 30px; gap: 6px; align-items: center; }
+.prow { display: grid; grid-template-columns: 1fr 72px 30px; gap: 6px; align-items: center; }
 .prow.head { font-size: 11px; color: var(--ink-light); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
 .prow input { width: 100%; min-width: 0; font: inherit; font-size: 16px; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--input); color: var(--ink); }
-.prow input.tagin { text-transform: uppercase; font-weight: 700; text-align: center; padding: 8px 4px; }
-.prow input.tagin.override { border-color: var(--accent); }
 .prow input.score { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
 .prow.updated input.score { border-color: var(--ok); }
 .prow .del { border: 0; background: transparent; color: var(--ink-light); font-size: 20px; cursor: pointer; }
@@ -138,7 +136,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
       <span id="tagLen">2</span>
       <button id="tagPlus" aria-label="Longer tag">+</button>
     </div>
-    <p class="hint">Leading brackets and symbols such as <b>[</b> or <b>(</b> are skipped. Tap a tag in the player list to override it for one player.</p>
+    <p class="hint">The tag is the start of each player's name (e.g. <b>AB</b>Luigi → team AB). Leading <b>[</b> or <b>(</b> is skipped. To fix a wrong tag, edit the player's name.</p>
   </section>
 
   <section class="card">
@@ -198,7 +196,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
       const s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
       if (s && typeof s === 'object') {
         state = Object.assign(state, s);
-        state.players = (state.players || []).map(p => ({ id: uid++, name: String(p.name || ''), score: Number(p.score) || 0, tagOverride: p.tagOverride || '' }));
+        state.players = (state.players || []).map(p => ({ id: uid++, name: String(p.name || ''), score: Number(p.score) || 0 }));
       }
     } catch (e) { /* storage unavailable */ }
     if (!FORMATS[state.mode]) state.mode = 12;
@@ -209,7 +207,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({
         mode: state.mode, teamSize: state.teamSize, tagLen: state.tagLen,
-        players: state.players.map(p => ({ name: p.name, score: p.score, tagOverride: p.tagOverride }))
+        players: state.players.map(p => ({ name: p.name, score: p.score }))
       }));
     } catch (e) { /* ignore */ }
   }
@@ -224,7 +222,13 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     const stripped = name.replace(/^[^\p{L}\p{N}]+/u, '');
     return Array.from(stripped).slice(0, state.tagLen).join('').toUpperCase();
   }
-  const tagOf = p => (p.tagOverride || autoTag(p.name)) || '?';
+  const tagOf = p => autoTag(p.name) || '?';
+  // Name without its tag ("AB Luigi" -> "Luigi"), used under the team heading so the tag isn't repeated.
+  function shortName(name) {
+    const stripped = name.replace(/^[^\p{L}\p{N}]+/u, '');
+    const rest = Array.from(stripped).slice(state.tagLen).join('').replace(/^[^\p{L}\p{N}]+/u, '').trim();
+    return rest || name;
+  }
   const normKey = s => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 
   function similarity(a, b) {
@@ -240,6 +244,26 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   }
 
   // ---------- Team computation ----------
+  // The text reader sometimes confuses look-alike characters in a tag (IJ -> 1J). If two teams are
+  // both short of players and their tags only differ by look-alikes, treat them as one team.
+  const LOOKALIKE = { '1': 'I', 'L': 'I', '|': 'I', '!': 'I', '0': 'O', 'Q': 'O', '5': 'S', '8': 'B', '2': 'Z', '6': 'G' };
+  const canonTag = t => Array.from(t).map(c => LOOKALIKE[c] || c).join('');
+  function mergeLookalikeTags(teams) {
+    const size = state.teamSize;
+    for (let i = 0; i < teams.length; i++) {
+      for (let j = i + 1; j < teams.length; j++) {
+        const a = teams[i], b = teams[j];
+        if (a.members.length >= size || b.members.length >= size) continue;
+        if (a.members.length + b.members.length > size || canonTag(a.tag) !== canonTag(b.tag)) continue;
+        // Keep the tag with more letters (IJ rather than 1J).
+        const keep = letters(b.tag) > letters(a.tag) ? b.tag : a.tag;
+        a.tag = keep; a.members.push(...b.members); a.total += b.total;
+        teams.splice(j, 1); j = i;
+      }
+    }
+    return teams;
+  }
+
   function computeTeams() {
     const players = state.players.filter(p => p.name.trim() !== '');
     let teams;
@@ -252,7 +276,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
         if (!map.has(t)) map.set(t, { tag: t, members: [], total: 0 });
         const team = map.get(t); team.members.push(p); team.total += p.score;
       }
-      teams = [...map.values()];
+      teams = mergeLookalikeTags([...map.values()]);
     }
     teams.sort((a, b) => b.total - a.total || a.tag.localeCompare(b.tag));
     teams.forEach(t => t.members.sort((a, b) => b.score - a.score));
@@ -284,7 +308,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
       if (t.total !== prevTotal) rank = i + 1; prevTotal = t.total;
       const gap = i === 0 ? '' : `<div class="gap">−${top - t.total}</div>`;
       const members = state.teamSize === 1 ? '' :
-        `<div class="members">${t.members.map(m => `${esc(m.name)} (${m.score})`).join(' · ')}</div>`;
+        `<div class="members">${t.members.map(m => `${esc(shortName(m.name))} (${m.score})`).join(' · ')}</div>`;
       const sizeWarn = state.teamSize > 1 && t.members.length !== state.teamSize
         ? `<div class="warnline">${t.members.length} player${t.members.length === 1 ? '' : 's'} (expected ${state.teamSize})</div>` : '';
       return `<div class="team">
@@ -297,10 +321,9 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
 
   function renderPlayers() {
     $('pcount').textContent = `${state.players.length}/${state.mode}`;
-    const head = `<div class="prow head"><div>Tag</div><div>Name</div><div style="text-align:right">Score</div><div></div></div>`;
+    const head = `<div class="prow head"><div>Name (tag first)</div><div style="text-align:right">Score</div><div></div></div>`;
     $('plist').innerHTML = head + state.players.map(p => `
       <div class="prow${lastUpdated.has(p.id) ? ' updated' : ''}" data-id="${p.id}">
-        <input class="tagin${p.tagOverride ? ' override' : ''}" data-f="tag" value="${esc(tagOf(p))}" maxlength="12" autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="Tag">
         <input data-f="name" value="${esc(p.name)}" placeholder="Name" autocomplete="off" spellcheck="false" aria-label="Name">
         <input class="score" data-f="score" value="${p.score}" inputmode="numeric" pattern="[0-9]*" aria-label="Score">
         <button class="del" data-del="${p.id}" aria-label="Remove">×</button>
@@ -330,13 +353,8 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     const f = e.target.dataset.f;
     if (f === 'name') {
       p.name = e.target.value;
-      if (!p.tagOverride) row.querySelector('.tagin').value = autoTag(p.name);
     } else if (f === 'score') {
       p.score = parseInt(e.target.value.replace(/\D/g, ''), 10) || 0;
-    } else if (f === 'tag') {
-      const v = e.target.value.trim().toUpperCase();
-      p.tagOverride = v && v !== autoTag(p.name) ? v : '';
-      e.target.classList.toggle('override', !!p.tagOverride);
     }
     renderStandings(); save();
   });
@@ -345,7 +363,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     state.players = state.players.filter(p => p.id !== +id); renderAll();
   });
   $('addBtn').onclick = () => {
-    state.players.push({ id: uid++, name: '', score: 0, tagOverride: '' }); renderAll();
+    state.players.push({ id: uid++, name: '', score: 0 }); renderAll();
     const inputs = $('plist').querySelectorAll('input[data-f="name"]'); inputs[inputs.length - 1]?.focus();
   };
   $('sortBtn').onclick = () => { state.players.sort((a, b) => b.score - a.score); renderAll(); };
@@ -357,7 +375,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   $('copyBtn').onclick = async () => {
     const { teams } = computeTeams(); if (!teams.length) return;
     const lines = [`${formatLabel(state.teamSize)} · ${state.mode} players`];
-    teams.forEach((t, i) => lines.push(`${i + 1}. ${t.tag} — ${t.total}` + (state.teamSize > 1 ? ` (${t.members.map(m => `${m.name} ${m.score}`).join(', ')})` : '')));
+    teams.forEach((t, i) => lines.push(`${i + 1}. ${t.tag} — ${t.total}` + (state.teamSize > 1 ? ` (${t.members.map(m => `${shortName(m.name)} ${m.score}`).join(', ')})` : '')));
     const text = lines.join('\n');
     try { await navigator.clipboard.writeText(text); toast('Standings copied'); }
     catch (e) { prompt('Copy the standings:', text); }
@@ -413,41 +431,123 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
       g[j] = v; if (v < min) min = v; if (v > max) max = v;
     }
     const range = Math.max(1, max - min);
-    for (let i = 0, j = 0; i < px.length; i += 4, j++) {
+    const hist = new Array(256).fill(0);
+    for (let j = 0; j < g.length; j++) {
       let v = ((g[j] - min) / range) * 255;
       if (invert) v = 255 - v;
+      g[j] = v; hist[g[j]]++;
+    }
+    // Otsu threshold -> pure black text on white, which the text reader handles best.
+    const t = invert ? otsu(hist, g.length) : -1;
+    for (let i = 0, j = 0; i < px.length; i += 4, j++) {
+      const v = t < 0 ? g[j] : (g[j] <= t ? 0 : 255);
       px[i] = px[i + 1] = px[i + 2] = v;
     }
     ctx.putImageData(d, 0, 0);
     return c;
   }
 
-  // Turn one OCR line into {name, score} or null.
-  function parseLine(raw) {
-    let line = raw.replace(/[|¦_~`"“”]/g, ' ').replace(/\s+/g, ' ').trim();
-    if (!line) return null;
-    let tokens = line.split(' ');
-    // Running total = last plain number on the line (ignore "+12" race points)
-    let scoreIdx = -1;
-    for (let i = tokens.length - 1; i >= 0; i--) {
-      const t = tokens[i].replace(/[oO]/g, '0').replace(/[lI]/g, '1').replace(/[.,:;]$/, '');
-      if (/^\d{1,3}$/.test(t) && !/^\+/.test(tokens[i])) { scoreIdx = i; tokens[i] = t; break; }
+  function otsu(hist, total) {
+    let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
+    let sumB = 0, wB = 0, best = 0, t = 127;
+    for (let i = 0; i < 256; i++) {
+      wB += hist[i]; if (!wB) continue;
+      const wF = total - wB; if (!wF) break;
+      sumB += i * hist[i];
+      const mB = sumB / wB, mF = (sum - sumB) / wF, between = wB * wF * (mB - mF) ** 2;
+      if (between > best) { best = between; t = i; }
     }
-    if (scoreIdx < 1) return null;
-    const score = parseInt(tokens[scoreIdx], 10);
-    let nameTokens = tokens.slice(0, scoreIdx).filter(t => !/^\+\d+$/.test(t));
-    // Drop leading placement like "1", "1st", "12th", "1."
-    if (nameTokens.length > 1 && /^\d{1,2}(st|nd|rd|th)?[.)]?$/i.test(nameTokens[0])) nameTokens.shift();
-    // Drop trailing stray race points / short junk
-    while (nameTokens.length > 1 && /^[+\-]?\d{1,2}$/.test(nameTokens[nameTokens.length - 1])) nameTokens.pop();
-    const name = nameTokens.join(' ').replace(/^[^\p{L}\p{N}\[\(]+|[^\p{L}\p{N}\]\)]+$/gu, '').trim();
-    if (!/\p{L}/u.test(name) || name.length < 2) return null;
-    return { name, score };
+    return t;
   }
 
-  function parseText(text) {
+  // ---------- Reading rows ----------
+  // Each results row looks like:  [position] [character icon] NAME  [▲/▼/• movement]  SCORE
+  // Only NAME and the score on the far right are kept. Words carry their x position so the
+  // position number and the icon (which the text reader often turns into junk letters) can be
+  // dropped by column, not by guessing from the text.
+  const PLACEMENT = /^\d{1,2}(st|nd|rd|th)?[.)]?$/i;
+  const letters = t => (t.match(/\p{L}/gu) || []).length;
+  const median = a => { const b = [...a].sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : 0; };
+
+  function readScore(text) {
+    if (/^\+/.test(text)) return null;                      // "+12" = points this race, not the total
+    let t = text.replace(/^[^\p{L}\p{N}+]+/u, '').replace(/[^\p{L}\p{N}]+$/u, '');  // "▲98" "98." -> 98
+    t = t.replace(/[oO]/g, '0').replace(/[lI]/g, '1');
+    return /^\d{1,3}$/.test(t) ? parseInt(t, 10) : null;
+  }
+  // Short bits left between the name and the score: movement arrows, dots, stray race points.
+  const isMarker = t => (letters(t) < 2 && Array.from(t).length <= 3) || /^[+\-]?\d{1,2}$/.test(t);
+
+  function cleanName(n) {
+    return n.replace(/[|¦_~`"“”]/g, ' ').replace(/\s+/g, ' ')
+      .replace(/^[^\p{L}\p{N}\[\(]+|[^\p{L}\p{N}\]\)]+$/gu, '').trim();
+  }
+
+  // Tesseract result -> rows of words [{text, x0, x1, y}]
+  function rowsFromOCR(data) {
+    return (data.lines || []).map(l => (l.words || [])
+      .map(w => ({ text: w.text.trim(), x0: w.bbox.x0, x1: w.bbox.x1, y0: w.bbox.y0, y1: w.bbox.y1, y: (w.bbox.y0 + w.bbox.y1) / 2 }))
+      .filter(w => w.text)
+      .sort((a, b) => a.x0 - b.x0)).filter(r => r.length);
+  }
+
+  function parseRows(rows) {
+    // 1. Score = rightmost number on the row.
+    const pre = [];
+    for (const words of rows) {
+      let idx = -1, score = 0;
+      for (let i = words.length - 1; i >= 0; i--) {
+        const v = readScore(words[i].text);
+        if (v !== null) { idx = i; score = v; break; }
+      }
+      if (idx < 1) continue;
+      const left = words.slice(0, idx);
+      if (!left.some(w => letters(w.text) >= 2)) continue;
+      pre.push({ left, score, y: words[idx].y, box: words[idx] });
+    }
+    if (!pre.length) return [];
+
+    // 2. Find the name column: names are left-aligned, so the x where words with letters start
+    //    most often (across rows) is where names begin. Position numbers have no letters, and
+    //    icon junk shows up only on some rows and in a different spot.
+    const lw = pre.flatMap(p => p.left.filter(w => letters(w.text) >= 2 && !PLACEMENT.test(w.text)));
+    const charW = median(lw.map(w => (w.x1 - w.x0) / Math.max(1, Array.from(w.text).length))) || 10;
+    const tol = charW * 1.6;
+    let nameX = null;
+    if (pre.length >= 3) {
+      const pts = [];
+      pre.forEach((p, r) => p.left.forEach(w => { if (letters(w.text) >= 2 && !PLACEMENT.test(w.text)) pts.push({ x: w.x0, y: p.y, r }); }));
+      pts.sort((a, b) => a.x - b.x);
+      let best = null;
+      for (let i = 0; i < pts.length; i++) {
+        const members = pts.filter(q => Math.abs(q.x - pts[i].x) <= tol);
+        const rowsHit = new Set(members.map(q => q.r)).size;
+        if (!best || rowsHit > best.rowsHit) best = { rowsHit, members };
+      }
+      if (best && best.rowsHit >= Math.max(2, pre.length * 0.4)) {
+        // Fit x = a + b*y through the column so a slightly tilted photo still lines up.
+        const m = best.members, n = m.length;
+        const my = m.reduce((s, q) => s + q.y, 0) / n, mx = m.reduce((s, q) => s + q.x, 0) / n;
+        const vy = m.reduce((s, q) => s + (q.y - my) ** 2, 0);
+        const b = vy > 0 ? m.reduce((s, q) => s + (q.y - my) * (q.x - mx), 0) / vy : 0;
+        nameX = y => mx + b * (y - my);
+      }
+    }
+
+    // 3. Keep the words from the name column up to the score, then drop trailing arrows/dots.
     const out = [];
-    for (const l of text.split('\n')) { const r = parseLine(l); if (r) out.push(r); }
+    for (const p of pre) {
+      let words = nameX ? p.left.filter(w => w.x0 >= nameX(p.y) - tol) : p.left;
+      if (!words.some(w => letters(w.text) >= 1)) words = p.left;
+      words = words.filter(w => !/^\+\d+$/.test(w.text));
+      while (words.length > 1 && (PLACEMENT.test(words[0].text) || letters(words[0].text) === 0)) words.shift();
+      while (words.length > 1 && isMarker(words[words.length - 1].text)) words.pop();
+      const name = cleanName(words.map(w => w.text).join(' '));
+      if (letters(name) < 1 || Array.from(name).length < 2) continue;
+      const nameBox = { x0: Math.min(...words.map(w => w.x0)), x1: Math.max(...words.map(w => w.x1)),
+                        y0: Math.min(...words.map(w => w.y0)), y1: Math.max(...words.map(w => w.y1)) };
+      out.push({ name, score: p.score, box: p.box, nameBox });
+    }
     return out;
   }
 
@@ -473,9 +573,45 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
         if (s > bestSim) { bestSim = s; best = p; }
       }
       if (best && bestSim >= 0.75) { best.score = r.score; lastUpdated.add(best.id); updated++; }
-      else { const p = { id: uid++, name: r.name, score: r.score, tagOverride: '' }; state.players.push(p); lastUpdated.add(p.id); added++; }
+      else { const p = { id: uid++, name: r.name, score: r.score }; state.players.push(p); lastUpdated.add(p.id); added++; }
     }
     return { updated, added };
+  }
+
+  // Second pass: read each score box again with a digits-only reader, which is far more
+  // reliable for numbers than the general pass (e.g. "98" misread as "08").
+  function padRect(canvas, b) {
+    const h = b.y1 - b.y0, pad = Math.round(h * 0.35);
+    const left = Math.max(0, Math.round(b.x0 - pad)), top = Math.max(0, Math.round(b.y0 - pad));
+    return { left, top, width: Math.min(canvas.width - left, Math.round(b.x1 - b.x0 + pad * 2)), height: Math.min(canvas.height - top, Math.round(h + pad * 2)) };
+  }
+  async function rereadScores(w, canvas, rows) {
+    try {
+      // Names: read each one on its own line, which is more accurate than the whole-screen pass.
+      // Skip boxes the first pass got wrong (much taller than the others), which would crop the wrong area.
+      const sane = key => {
+        const hs = rows.filter(r => r[key]).map(r => r[key].y1 - r[key].y0).sort((a, b) => a - b);
+        const ref = hs[Math.floor(hs.length * 0.25)] || 0;   // a typical good box (bad ones are the tall outliers)
+        return r => r[key] && (r[key].y1 - r[key].y0) <= ref * 1.5;
+      };
+      const okName = sane('nameBox'), okScore = sane('box');
+      await w.setParameters({ tessedit_pageseg_mode: '7' });
+      for (const r of rows) {
+        if (!okName(r)) continue;
+        const { data } = await w.recognize(canvas, { rectangle: padRect(canvas, r.nameBox) });
+        const n = cleanName(data.text);
+        if (letters(n) >= 2 && Math.abs(Array.from(n).length - Array.from(r.name).length) <= 3) r.name = n;
+      }
+      await w.setParameters({ tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: '7' });
+      for (const r of rows) {
+        if (!okScore(r)) continue;
+        const { data } = await w.recognize(canvas, { rectangle: padRect(canvas, r.box) });
+        const t = data.text.replace(/\D/g, '');
+        if (/^\d{1,3}$/.test(t)) r.score = parseInt(t, 10);
+      }
+    } finally {
+      await w.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' });
+    }
   }
 
   async function handleFiles(files, input) {
@@ -493,14 +629,19 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
         const { img, url } = await loadImage(files[f]);
         $('thumbs').insertAdjacentHTML('beforeend', `<img src="${url}" alt="Scanned photo ${f + 1}">`);
         let best = [];
-        let bestText = '';
+        let bestText = '', bestCanvas = null;
         for (const invert of [true, false]) {
           progressBase = pass / passes; progressSpan = 1 / passes; pass++;
           $('status').textContent = `Reading photo ${f + 1} of ${files.length}…`;
-          const { data } = await w.recognize(prepCanvas(img, invert));
-          const rows = parseText(data.text);
-          if (rows.length > best.length) { best = rows; bestText = data.text; }
+          const canvas = prepCanvas(img, invert);
+          const { data } = await w.recognize(canvas);
+          const rows = parseRows(rowsFromOCR(data));
+          if (rows.length > best.length) { best = rows; bestText = data.text; bestCanvas = canvas; }
           if (best.length >= state.mode) break;
+        }
+        if (best.length) {
+          $('status').textContent = `Checking scores in photo ${f + 1}…`;
+          await rereadScores(w, bestCanvas, best);
         }
         rawDump.push(`— Photo ${f + 1} —\n${bestText.trim()}`);
         allRows = allRows.concat(best);
@@ -525,7 +666,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   }
 
   // Expose parser for testing
-  window.__mk = { parseLine, parseText, autoTag: n => autoTag(n), computeTeams, state: () => state };
+  window.__mk = { parseRows, shortName, autoTag: n => autoTag(n), computeTeams, state: () => state };
 
   load();
   renderAll();

@@ -2,8 +2,8 @@ import UIKit
 import Vision
 
 /// On-device text recognition with Apple's Vision framework.
-/// Vision returns separate boxes for text that is far apart (e.g. a name and its score),
-/// so boxes are grouped into rows by their vertical position and read left to right.
+/// Returns the screen as rows of words, each with its position, so the parser can tell the
+/// position/icon columns apart from the name and score columns.
 enum TextRecognizer {
 
     enum RecognizerError: LocalizedError {
@@ -11,7 +11,7 @@ enum TextRecognizer {
         var errorDescription: String? { "The image could not be opened." }
     }
 
-    static func recognizeLines(in image: UIImage) async throws -> [String] {
+    static func recognizeRows(in image: UIImage) async throws -> [[OCRWord]] {
         guard let cgImage = image.cgImage else { throw RecognizerError.badImage }
         let orientation = CGImagePropertyOrientation(image.imageOrientation)
 
@@ -29,36 +29,47 @@ enum TextRecognizer {
                 }
             }
         }
-        return groupIntoRows(observations)
+        return groupIntoRows(words(from: observations))
     }
 
-    private struct Piece {
-        let text: String
-        let box: CGRect   // normalised, origin bottom-left
-    }
-
-    static func groupIntoRows(_ observations: [VNRecognizedTextObservation]) -> [String] {
-        let pieces = observations.compactMap { obs -> Piece? in
-            guard let text = obs.topCandidates(1).first?.string else { return nil }
-            return Piece(text: text, box: obs.boundingBox)
+    /// Split each recognised phrase into words with their own boxes.
+    private static func words(from observations: [VNRecognizedTextObservation]) -> [OCRWord] {
+        var out: [OCRWord] = []
+        for obs in observations {
+            guard let candidate = obs.topCandidates(1).first else { continue }
+            let string = candidate.string
+            var start = string.startIndex
+            while start < string.endIndex {
+                guard let wordStart = string[start...].firstIndex(where: { !$0.isWhitespace }) else { break }
+                let wordEnd = string[wordStart...].firstIndex(where: \.isWhitespace) ?? string.endIndex
+                let range = wordStart..<wordEnd
+                // Vision: origin bottom-left. Convert so y grows downwards.
+                let box = (try? candidate.boundingBox(for: range))?.boundingBox ?? obs.boundingBox
+                out.append(OCRWord(text: String(string[range]), x0: box.minX, x1: box.maxX, y: 1 - box.midY))
+                start = wordEnd
+            }
         }
-        // Top of screen first.
-        let sorted = pieces.sorted { $0.box.midY > $1.box.midY }
-        var rows: [[Piece]] = []
-        for p in sorted {
-            if let lastRow = rows.last {
-                let rowMid = lastRow.map(\.box.midY).reduce(0, +) / CGFloat(lastRow.count)
-                let rowHeight = lastRow.map(\.box.height).max() ?? p.box.height
-                if abs(p.box.midY - rowMid) < max(rowHeight, p.box.height) * 0.5 {
-                    rows[rows.count - 1].append(p)
+        return out
+    }
+
+    private static func groupIntoRows(_ words: [OCRWord]) -> [[OCRWord]] {
+        guard !words.isEmpty else { return [] }
+        let sorted = words.sorted { $0.y < $1.y }
+        // Row spacing = typical vertical gap between neighbouring words that are on different rows.
+        let gaps = zip(sorted.dropFirst(), sorted).map { $0.y - $1.y }.filter { $0 > 0.004 }.sorted()
+        let rowGap = gaps.isEmpty ? 0.02 : gaps[gaps.count / 2]
+        var rows: [[OCRWord]] = []
+        for w in sorted {
+            if let last = rows.last {
+                let mid = last.map(\.y).reduce(0, +) / CGFloat(last.count)
+                if abs(w.y - mid) < rowGap * 0.5 {
+                    rows[rows.count - 1].append(w)
                     continue
                 }
             }
-            rows.append([p])
+            rows.append([w])
         }
-        return rows.map { row in
-            row.sorted { $0.box.minX < $1.box.minX }.map(\.text).joined(separator: " ")
-        }
+        return rows.map { $0.sorted { $0.x0 < $1.x0 } }
     }
 }
 

@@ -6,8 +6,6 @@ struct Player: Identifiable, Codable, Equatable {
     var id = UUID()
     var name: String
     var score: Int
-    /// Empty means "use the tag taken from the start of the name".
-    var tagOverride: String = ""
 }
 
 struct Team: Identifiable {
@@ -90,15 +88,51 @@ final class ScoreStore: ObservableObject {
         return String(stripped.prefix(tagLength)).uppercased()
     }
 
+    /// The tag is part of the name: its first `tagLength` characters.
     func tag(for player: Player) -> String {
-        let t = player.tagOverride.isEmpty ? autoTag(for: player.name) : player.tagOverride
+        let t = autoTag(for: player.name)
         return t.isEmpty ? "?" : t
     }
 
-    func setTag(_ value: String, for id: UUID) {
-        guard let i = players.firstIndex(where: { $0.id == id }) else { return }
-        let v = value.trimmingCharacters(in: .whitespaces).uppercased()
-        players[i].tagOverride = (v.isEmpty || v == autoTag(for: players[i].name)) ? "" : v
+    /// Name without its tag ("AB Luigi" -> "Luigi"), shown under the team heading so the tag isn't repeated.
+    func shortName(_ name: String) -> String {
+        let stripped = name.drop { !$0.isLetter && !$0.isNumber }
+        let rest = stripped.dropFirst(tagLength).drop { !$0.isLetter && !$0.isNumber }
+        let r = String(rest).trimmingCharacters(in: .whitespaces)
+        return r.isEmpty ? name : r
+    }
+
+    /// The text reader sometimes confuses look-alike characters in a tag (IJ -> 1J). If two teams are
+    /// both short of players and their tags only differ by look-alikes, treat them as one team.
+    private static let lookalike: [Character: Character] =
+        ["1": "I", "L": "I", "|": "I", "!": "I", "0": "O", "Q": "O", "5": "S", "8": "B", "2": "Z", "6": "G"]
+
+    private func canonTag(_ t: String) -> String {
+        String(t.map { Self.lookalike[$0] ?? $0 })
+    }
+
+    private func mergeLookalikeTags(_ input: [Team]) -> [Team] {
+        var teams = input
+        var i = 0
+        while i < teams.count {
+            var j = i + 1
+            while j < teams.count {
+                let a = teams[i], b = teams[j]
+                if a.members.count < teamSize, b.members.count < teamSize,
+                   a.members.count + b.members.count <= teamSize,
+                   canonTag(a.tag) == canonTag(b.tag) {
+                    let keep = ScoreParser.letterCount(b.tag) > ScoreParser.letterCount(a.tag) ? b.tag : a.tag
+                    let members = (a.members + b.members).sorted { $0.score > $1.score }
+                    teams[i] = Team(tag: keep, members: members, total: a.total + b.total)
+                    teams.remove(at: j)
+                    j = i + 1
+                } else {
+                    j += 1
+                }
+            }
+            i += 1
+        }
+        return teams
     }
 
     var activePlayers: [Player] {
@@ -118,10 +152,10 @@ final class ScoreStore: ObservableObject {
                 if groups[t] == nil { order.append(t) }
                 groups[t, default: []].append(p)
             }
-            result = order.map { t in
+            result = mergeLookalikeTags(order.map { t in
                 let members = groups[t]!.sorted { $0.score > $1.score }
                 return Team(tag: t, members: members, total: members.reduce(0) { $0 + $1.score })
-            }
+            })
         }
         return result.sorted { $0.total != $1.total ? $0.total > $1.total : $0.tag < $1.tag }
     }
@@ -148,7 +182,7 @@ final class ScoreStore: ObservableObject {
         for (i, t) in teams.enumerated() {
             var line = "\(i + 1). \(t.tag) — \(t.total)"
             if teamSize > 1 {
-                line += " (" + t.members.map { "\($0.name) \($0.score)" }.joined(separator: ", ") + ")"
+                line += " (" + t.members.map { "\(shortName($0.name)) \($0.score)" }.joined(separator: ", ") + ")"
             }
             lines.append(line)
         }
@@ -204,8 +238,8 @@ final class ScoreStore: ObservableObject {
         for (i, image) in images.enumerated() {
             status = "Reading photo \(i + 1) of \(images.count)…"
             do {
-                let lines = try await TextRecognizer.recognizeLines(in: image)
-                all += ScoreParser.parse(lines: lines)
+                let rows = try await TextRecognizer.recognizeRows(in: image)
+                all += ScoreParser.parse(rows: rows)
             } catch {
                 status = "Couldn't read photo \(i + 1): \(error.localizedDescription)"
             }
