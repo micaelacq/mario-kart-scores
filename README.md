@@ -29,7 +29,6 @@ Open it in Safari on your iPhone and choose **Share → Add to Home Screen**.
 | Path | What it is |
 | --- | --- |
 | `index.html` + icons + `manifest.webmanifest` | The web app, served by GitHub Pages. Text is read on the phone with Tesseract.js. |
-| `ios/MKTeamScores/` | Native SwiftUI app using Apple's Vision text recognition. See its [README](ios/MKTeamScores/README.md) for build steps (needs a Mac with Xcode 16+). |
 
 ## GitHub Pages
 
