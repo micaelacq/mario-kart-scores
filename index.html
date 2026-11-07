@@ -196,7 +196,8 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
       const s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
       if (s && typeof s === 'object') {
         state = Object.assign(state, s);
-        state.players = (state.players || []).map(p => ({ id: uid++, name: String(p.name || ''), score: Number(p.score) || 0 }));
+        state.players = (state.players || []).map(p => ({ id: uid++, name: String(p.name || ''), score: Number(p.score) || 0,
+          seen: p.seen && typeof p.seen === 'object' ? p.seen : {}, manual: !!p.manual }));
       }
     } catch (e) { /* storage unavailable */ }
     if (!FORMATS[state.mode]) state.mode = 12;
@@ -207,7 +208,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({
         mode: state.mode, teamSize: state.teamSize, tagLen: state.tagLen,
-        players: state.players.map(p => ({ name: p.name, score: p.score }))
+        players: state.players.map(p => ({ name: p.name, score: p.score, seen: p.seen || {}, manual: !!p.manual }))
       }));
     } catch (e) { /* ignore */ }
   }
@@ -406,7 +407,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     const p = state.players.find(x => x.id === +row.dataset.id); if (!p) return;
     const f = e.target.dataset.f;
     if (f === 'name') {
-      p.name = e.target.value;
+      p.name = e.target.value; p.manual = true;
     } else if (f === 'score') {
       p.score = parseInt(e.target.value.replace(/\D/g, ''), 10) || 0;
     }
@@ -454,7 +455,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     worker = await Tesseract.createWorker('eng', 1, {
       logger: m => { if (m.status === 'recognizing text') setProgress(progressBase + m.progress * progressSpan); }
     });
-    await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
+    await worker.setParameters({ tessedit_pageseg_mode: PAGE_PSM, preserve_interword_spaces: '1' });
     return worker;
   }
 
@@ -470,6 +471,48 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
 
   // Build a high-contrast greyscale canvas. invert=true turns light text on dark/coloured bars into dark text on white.
   // shear > 0 straightens the game's italic font (letters lean right), which reads more reliably.
+  // Local (adaptive) clean-up for real photos: the game draws names and scores as darker text on a
+  // coloured bar (white on your own row). A pixel is text if it's clearly darker OR lighter than the
+  // average around it, so every bar colour and the white row all come out as black text on white.
+  function prepAdaptive(img, shear = 0) {
+    const target = 2000;
+    const scale = Math.min(3, target / Math.max(img.naturalWidth, img.naturalHeight)) || 1;
+    const iw = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
+    const w = iw + Math.round(shear * h);
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+    ctx.setTransform(1, 0, shear, 1, 0, 0);
+    ctx.drawImage(img, 0, 0, iw, h);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const d = ctx.getImageData(0, 0, w, h), px = d.data;
+    const g = new Float32Array(w * h);
+    for (let i = 0, j = 0; i < px.length; i += 4, j++) g[j] = px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114;
+    // integral image for fast window means
+    const W1 = w + 1, ii = new Float64Array(W1 * (h + 1));
+    for (let y = 0; y < h; y++) {
+      let row = 0;
+      for (let x = 0; x < w; x++) { row += g[y * w + x]; ii[(y + 1) * W1 + x + 1] = ii[y * W1 + x + 1] + row; }
+    }
+    const r = Math.max(8, Math.round(Math.max(w, h) / 70));   // window ~ 1.5x text height
+    const T = ADAPTIVE_T;
+    for (let y = 0; y < h; y++) {
+      const y0 = Math.max(0, y - r), y1 = Math.min(h, y + r + 1);
+      for (let x = 0; x < w; x++) {
+        const x0 = Math.max(0, x - r), x1 = Math.min(w, x + r + 1);
+        const sum = ii[y1 * W1 + x1] - ii[y0 * W1 + x1] - ii[y1 * W1 + x0] + ii[y0 * W1 + x0];
+        const mean = sum / ((y1 - y0) * (x1 - x0));
+        const v = Math.abs(g[y * w + x] - mean) > T ? 0 : 255;
+        const k = (y * w + x) * 4; px[k] = px[k + 1] = px[k + 2] = v;
+      }
+    }
+    ctx.putImageData(d, 0, 0);
+    c._scale = scale; c._shear = shear;
+    return c;
+  }
+  let ADAPTIVE_T = 22;
+  const PAGE_PSM = '11';   // sparse text: find words anywhere, rows are rebuilt from word positions
+
   function prepCanvas(img, invert, shear = 0) {
     const target = 1800;
     const scale = Math.min(3, target / Math.max(img.naturalWidth, img.naturalHeight)) || 1;
@@ -548,14 +591,26 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   }
 
   // Tesseract result -> rows of words [{text, x0, x1, y}]
+  // Words are grouped into rows by their height on screen (the reader's own line grouping gets
+  // confused by the busy game background next to the results bars).
   function rowsFromOCR(data) {
-    return (data.lines || []).map(l => (l.words || [])
+    const words = (data.words || [])
       .map(w => ({ text: w.text.trim(), x0: w.bbox.x0, x1: w.bbox.x1, y0: w.bbox.y0, y1: w.bbox.y1, y: (w.bbox.y0 + w.bbox.y1) / 2 }))
       .filter(w => w.text)
-      .sort((a, b) => a.x0 - b.x0)).filter(r => r.length);
+      .sort((a, b) => a.y - b.y);
+    if (!words.length) return [];
+    const mh = median(words.map(w => w.y1 - w.y0)) || 10;
+    const rows = [];
+    for (const w of words) {
+      const row = rows[rows.length - 1];
+      if (row && Math.abs(w.y - row.y) < mh * 0.55) { row.words.push(w); row.y = row.words.reduce((a, q) => a + q.y, 0) / row.words.length; }
+      else rows.push({ y: w.y, words: [w] });
+    }
+    return rows.map(r => r.words.sort((a, b) => a.x0 - b.x0));
   }
 
-  function parseRows(rows) {
+  function parseRows(rows, opts = {}) {
+    const minLetters = opts.minNameLetters || 2;
     // 1. Score = rightmost number on the row.
     const pre = [];
     for (const words of rows) {
@@ -566,7 +621,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
       }
       if (idx < 1) continue;
       const left = words.slice(0, idx);
-      if (!left.some(w => letters(w.text) >= 2)) continue;
+      if (!left.some(w => letters(w.text) >= minLetters)) continue;
       pre.push({ left, score, y: words[idx].y, box: words[idx] });
     }
     if (!pre.length) return [];
@@ -601,13 +656,24 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     // 3. Keep the words from the name column up to the score, then drop trailing arrows/dots.
     const out = [];
     for (const p of pre) {
-      let words = nameX ? p.left.filter(w => w.x0 >= nameX(p.y) - tol) : p.left;
+      let words = p.left;
+      if (nameX) {
+        const nx = nameX(p.y);
+        // keep words reaching into the name column; a word that starts left of it has icon junk stuck
+        // to its front ("yN"), so drop the characters that sit left of the column
+        words = p.left.filter(w => w.x1 > nx + charW * 0.2).map(w => {
+          if (w.x0 >= nx - charW * 0.6) return w;
+          const chars = Array.from(w.text), cw = (w.x1 - w.x0) / Math.max(1, chars.length);
+          const drop = Math.min(chars.length - 1, Math.round((nx - w.x0) / cw));
+          return { ...w, text: chars.slice(drop).join(''), x0: w.x0 + drop * cw };
+        });
+      }
       if (!words.some(w => letters(w.text) >= 1)) words = p.left;
       words = words.filter(w => !/^\+\d+$/.test(w.text));
       while (words.length > 1 && (PLACEMENT.test(words[0].text) || letters(words[0].text) === 0)) words.shift();
       while (words.length > 1 && isMarker(words[words.length - 1].text)) words.pop();
       const name = cleanName(words.map(w => w.text).join(' '));
-      if (letters(name) < 1 || Array.from(name).length < 2) continue;
+      if (letters(name) < 1 || Array.from(name).length < minLetters) continue;
       const nameBox = { x0: Math.min(...words.map(w => w.x0)), x1: Math.max(...words.map(w => w.x1)),
                         y0: Math.min(...words.map(w => w.y0)), y1: Math.max(...words.map(w => w.y1)) };
       out.push({ name, score: p.score, box: p.box, nameBox });
@@ -629,16 +695,35 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   function applyScan(rows) {
     lastUpdated = new Set();
     let updated = 0, added = 0;
-    for (const r of rows) {
-      const k = normKey(r.name);
-      let best = null, bestSim = 0;
-      for (const p of state.players) {
-        const s = similarity(normKey(p.name), k);
-        if (s > bestSim) { bestSim = s; best = p; }
+    const pairs = [];
+    rows.forEach((r, i) => state.players.forEach(p => pairs.push({ i, p, sim: similarity(normKey(p.name), normKey(r.name)) })));
+    pairs.sort((a, b) => b.sim - a.sim);
+    const rowDone = new Set(), playerDone = new Set();
+    const take = (i, p) => {
+      p.score = rows[i].score; lastUpdated.add(p.id); rowDone.add(i); playerDone.add(p.id); updated++;
+      // names vote across scans: show the reading seen most often (unless the name was typed by hand)
+      p.seen = p.seen || {}; p.seen[rows[i].name] = (p.seen[rows[i].name] || 0) + 1;
+      if (!p.manual) {
+        const top = Object.entries(p.seen).sort((a, b) => b[1] - a[1])[0];
+        if (top[1] > (p.seen[p.name] || 0)) p.name = top[0];
       }
-      if (best && bestSim >= 0.75) { best.score = r.score; lastUpdated.add(best.id); updated++; }
-      else { const p = { id: uid++, name: r.name, score: r.score }; state.players.push(p); lastUpdated.add(p.id); added++; }
+    };
+    // 1. clear name matches, best first, each player at most once
+    for (const { i, p, sim } of pairs) if (sim >= 0.75 && !rowDone.has(i) && !playerDone.has(p.id)) take(i, p);
+    // 2. The lobby is already complete, so a row that matched nobody is a misread name of a player not
+    //    yet updated in this scan: pair it with the most similar one. Running totals never go down,
+    //    so players whose total would drop are a worse fit.
+    if (state.players.length >= state.mode) {
+      const rest = pairs.filter(({ i, p }) => !rowDone.has(i) && !playerDone.has(p.id))
+        .map(x => ({ ...x, fit: x.sim + (rows[x.i].score >= x.p.score ? 0.3 : 0) }))
+        .sort((a, b) => b.fit - a.fit);
+      for (const { i, p } of rest) if (!rowDone.has(i) && !playerDone.has(p.id)) take(i, p);
     }
+    // 3. anything left is a new player
+    rows.forEach((r, i) => {
+      if (rowDone.has(i)) return;
+      const p = { id: uid++, name: r.name, score: r.score, seen: { [r.name]: 1 } }; state.players.push(p); lastUpdated.add(p.id); added++;
+    });
     return { updated, added };
   }
 
@@ -675,7 +760,341 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
         if (/^\d{1,3}$/.test(t) && t.length === (scoreDigits(r.box.text) || '').length) r.score = parseInt(t, 10);
       }
     } finally {
-      await w.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' });
+      await w.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: PAGE_PSM });
+    }
+  }
+
+  // ---------- Row-by-row reading for real photos ----------
+  // 1. A digits-only pass finds the scores it is sure of. They sit in a straight, evenly spaced column
+  //    on the right, which tells us where every row is (even the ones it missed) and how tall rows are.
+  // 2. Each row's name and score are then cropped from the original photo and read on their own.
+  //    The layout is fixed in row-height units: the name starts ~6.6 row heights left of the score's
+  //    right edge, so the movement arrow, position and character icon are never read.
+  const L = { nameFrom: 7.0, nameTo: 2.6, scoreFrom: 1.6, scoreTo: -0.7 };   // in row heights from score's right edge
+
+  function findScoreColumn(words, canvas) {
+    const sc = canvas._scale, sh = canvas._shear || 0;
+    const nums = words.filter(w => /^\d{1,3}$/.test(w.text) && w.confidence >= 75)
+      .map(w => {
+        const y = (w.bbox.y0 + w.bbox.y1) / 2;
+        return { right: (w.bbox.x1 - sh * y) / sc, y: y / sc, h: (w.bbox.y1 - w.bbox.y0) / sc };
+      });
+    if (nums.length < 3) return null;
+    const h = median(nums.map(n => n.h));
+    // largest group of numbers whose right edges line up (allowing a slight tilt): the score column
+    let best = null;
+    for (const a of nums) {
+      const group = nums.filter(n => Math.abs(n.right - a.right) < h * 1.5);
+      if (!best || group.length > best.length || (group.length === best.length && a.right > best[0].right)) best = group;
+    }
+    if (best.length < 3) return null;
+    best.sort((a, b) => a.y - b.y);
+    // row pitch: smallest clear gap, then refined over all anchors
+    const gaps = best.slice(1).map((n, i) => n.y - best[i].y).filter(g => g > h * 1.2);
+    if (!gaps.length) return null;
+    let p = Math.min(...gaps);
+    const k = best.map(n => Math.round((n.y - best[0].y) / p));
+    // least squares y = y0 + p*k and right = a + b*y
+    const n = best.length, mk = k.reduce((s, v) => s + v, 0) / n, my = best.reduce((s, v) => s + v.y, 0) / n;
+    const vk = k.reduce((s, v) => s + (v - mk) ** 2, 0);
+    if (vk > 0) p = k.reduce((s, v, i) => s + (v - mk) * (best[i].y - my), 0) / vk;
+    const y0 = my - p * mk;
+    const mr = best.reduce((s, v) => s + v.right, 0) / n;
+    const vy = best.reduce((s, v) => s + (v.y - my) ** 2, 0);
+    const b = vy > 0 ? best.reduce((s, v) => s + (v.y - my) * (v.right - mr), 0) / vy : 0;
+    return { pitch: p, y0, rightAt: y => mr + b * (y - my), textH: h };
+  }
+
+  // Crop part of the photo, clean it against its own bar colour, and straighten the italic font.
+  // Returns a black-on-white canvas with a white margin (the text reader likes some space around text).
+  // Remove specks: connected blobs shorter than minH pixels (crop-edge marks, emblem bits).
+  function despeckle(px, w, h, minH) {
+    const seen = new Uint8Array(w * h), stack = [];
+    for (let s0 = 0; s0 < w * h; s0++) {
+      if (seen[s0] || px[s0 * 4] !== 0) continue;
+      const comp = []; let top = h, bot = 0;
+      stack.push(s0); seen[s0] = 1;
+      while (stack.length) {
+        const q = stack.pop(); comp.push(q);
+        const y = (q / w) | 0, x = q - y * w; if (y < top) top = y; if (y > bot) bot = y;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const n = ny * w + nx; if (!seen[n] && px[n * 4] === 0) { seen[n] = 1; stack.push(n); }
+        }
+      }
+      if (bot - top + 1 < minH) for (const q of comp) px[q * 4] = px[q * 4 + 1] = px[q * 4 + 2] = 255;
+    }
+  }
+
+  // opts.sides: also erase blobs touching the left/right crop edges (end of the bar, TV background),
+  // so a generous crop never clips a digit and never adds junk.
+  function cropRow(img, x0, y0, x1, y1, shear = 0.2, minSpeck = 0.12, outH = 64, opts = {}) {
+    const sw = x1 - x0, sh = y1 - y0, k = outH / sh, M = 12;
+    const iw = Math.round(sw * k), h = outH, w = iw + Math.round(shear * h);
+    const c = document.createElement('canvas'); c.width = w + 2 * M; c.height = h + 2 * M;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    const tmp = document.createElement('canvas'); tmp.width = w; tmp.height = h;
+    const tc = tmp.getContext('2d', { willReadFrequently: true });
+    tc.setTransform(1, 0, shear, 1, 0, 0);          // x' = x + shear*y: undoes the rightward lean
+    tc.drawImage(img, x0, y0, sw, sh, 0, 0, iw, h);
+    tc.setTransform(1, 0, 0, 1, 0, 0);
+    const d = tc.getImageData(0, 0, w, h), px = d.data;
+    const inside = (x, y) => x >= shear * y && x < shear * y + iw;
+    // The bar fills most of the crop, so the per-channel median is the bar colour. Text is a clearly
+    // different colour (a darker shade of the bar, or white on your own row); faint emblems are not.
+    const R = [], G = [], B = [];
+    for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) if (inside(x, y)) { const i = (y * w + x) * 4; R.push(px[i]); G.push(px[i + 1]); B.push(px[i + 2]); }
+    const mr = median(R), mg = median(G), mb = median(B), t = 48;
+    const barLum = mr * 0.299 + mg * 0.587 + mb * 0.114;
+    const lumAt = i => px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114;
+    const build = light => {
+      const ink = new Uint8Array(w * h);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4; if (!inside(x, y)) continue;
+        ink[y * w + x] = light ? (lumAt(i) > barLum + 60 ? 1 : 0)
+                               : (Math.hypot(px[i] - mr, px[i + 1] - mg, px[i + 2] - mb) > t ? 1 : 0);
+      }
+      for (let y = 0; y < h; y++) {
+        // a long unbroken line across the crop is a bar edge, not text
+        let run = 0, longest = 0;
+        for (let x = 0; x < w; x++) { run = ink[y * w + x] ? run + 1 : 0; if (run > longest) longest = run; }
+        if (longest > iw * 0.45) for (let x = 0; x < w; x++) ink[y * w + x] = 0;
+      }
+      if (opts.sides) clearSideBlobs(ink, w, h, shear, iw);
+      return ink;
+    };
+    let ink = build(false);
+    // Your own row: white text with a dark outline. If most remaining text pixels in the middle of the
+    // bar are bright, keep only the white fill, or the outline merges each character into a blob.
+    let bright = 0, total = 0;
+    for (let y = Math.round(h * 0.25); y < h * 0.75; y++) for (let x = 0; x < w; x++) if (ink[y * w + x]) {
+      total++; if (lumAt((y * w + x) * 4) > barLum + 60) bright++;
+    }
+    if (total > 30 && bright / total > 0.4) ink = build(true);
+    for (let j = 0; j < w * h; j++) { const v = ink[j] ? 0 : 255; px[j * 4] = px[j * 4 + 1] = px[j * 4 + 2] = v; px[j * 4 + 3] = 255; }
+    despeckle(px, w, h, Math.round(h * minSpeck));
+    let sumY = 0, nBlack = 0, maxX = -1, inkCount = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (px[(y * w + x) * 4] === 0) {
+      if (x > w * 0.1 && x < w * 0.9) { sumY += y; nBlack++; }
+      if (x > maxX) maxX = x;
+      inkCount++;
+    }
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+    tc.putImageData(d, 0, 0);
+    ctx.drawImage(tmp, M, M);
+    // where the text's centre sits relative to the crop centre, in source pixels (to re-centre the row)
+    c._dy = nBlack > 20 ? (sumY / nBlack - h / 2) / k : 0;
+    // same, but from the densest band of text rows (ignores thin slanted bar edges)
+    const rowInk = new Float32Array(h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (px[(y * w + x) * 4] === 0) rowInk[y]++;
+    const band = Math.round(h * 0.4); let bestSum = -1, bestY = h / 2;
+    for (let y = 0; y + band <= h; y++) { let sum = 0; for (let j = y; j < y + band; j++) sum += rowInk[j]; if (sum > bestSum) { bestSum = sum; bestY = y + band / 2; } }
+    c._dyBand = bestSum > 20 ? (bestY - h / 2) / k : 0;
+    // right edge of the text in photo coordinates (to refine where the score column is)
+    c._inkRight = maxX >= 0 ? x0 + (maxX - shear * h / 2) / k : null;
+    c._inkCount = inkCount;
+    return c;
+  }
+
+  function clearSideBlobs(ink, w, h, shear, iw) {
+    const seen = new Uint8Array(w * h);
+    for (let s0 = 0; s0 < w * h; s0++) {
+      if (!ink[s0] || seen[s0]) continue;
+      const comp = [], stack = [s0]; seen[s0] = 1; let touches = false;
+      while (stack.length) {
+        const q = stack.pop(); comp.push(q);
+        const y = (q / w) | 0, x = q - y * w;
+        if (x <= shear * y + 2 || x >= shear * y + iw - 3) touches = true;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const n = ny * w + nx; if (ink[n] && !seen[n]) { seen[n] = 1; stack.push(n); }
+        }
+      }
+      if (touches) for (const q of comp) ink[q] = 0;
+    }
+  }
+
+  // Crop a black-on-white canvas to its ink, enlarge it, and add a white margin.
+  function tightCrop(canvas, scale) {
+    const w = canvas.width, h = canvas.height, px = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+    let x0 = w, x1 = -1, y0 = h, y1 = -1;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (px[(y * w + x) * 4] < 128) {
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    if (x1 < 0) return null;
+    const cw = (x1 - x0 + 1) * scale, ch = (y1 - y0 + 1) * scale;
+    const c = document.createElement('canvas'); c.width = cw + 40; c.height = ch + 40;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(canvas, x0, y0, x1 - x0 + 1, y1 - y0 + 1, 20, 20, cw, ch);
+    c._x0 = x0;
+    return c;
+  }
+
+  // ---------- Digit templates ----------
+  // The score digits on the results screen use the game's own font, which the general text reader
+  // often misreads (1/4/7). These are average shapes of each digit (12x18 cells, share of ink per cell),
+  // measured from cleaned-up score crops of real results-screen photos. Each digit in a new crop is
+  // matched to the closest shape.
+  const TW = 12, TH = 18;
+  const DIGITS = {"0":[0,0,0.1,0.7,0.9,1,0.7,0.4,0,0,0,0,0,0.05,0.7,1,1,1,1,0.85,0.5,0.05,0,0,0,0.4,1,1,1,1,1,1,1,0.45,0,0,0,0.85,1,1,1,1,1,1,1,0.8,0.05,0,0.75,0.95,1,1,1,0.95,0.9,1,1,1,0.55,0,0.5,1,1,1,0.8,0.2,0.3,0.9,1,1,0.8,0,0.5,1,1,1,0.3,0.15,0.05,0.35,0.95,1,1,0.3,0.8,1,1,1,0.2,0.1,0,0.1,0.9,1,1,0.45,0.6,1,1,1,0.2,0.1,0,0.05,0.85,1,1,0.7,0.5,1,1,1,0.4,0.1,0,0.1,0.7,1,1,0.8,0.2,0.9,1,1,0.5,0.1,0,0.05,0.55,1,1,0.85,0.1,0.75,1,1,0.85,0.05,0.05,0,0.65,1,1,0.95,0,0.45,1,1,1,0.6,0.6,0.6,0.8,1,1,0.8,0,0.15,0.95,1,1,0.95,0.75,0.7,1,1,1,0.8,0,0,0.45,1,1,1,1,1,1,1,1,0.5,0,0,0.1,0.75,1,1,1,1,1,1,0.9,0.3,0,0,0,0.25,0.75,0.95,0.95,1,0.9,0.85,0.55,0.05,0,0,0,0.1,0.25,0.45,0.75,0.7,0.6,0.35,0,0],"1":[0,0,0,0,0.34,0.97,0.94,0.95,0.92,0.08,0,0,0,0,0,0.19,0.93,1,1,1,1,0.53,0,0,0,0,0.07,0.87,1,1,1,1,1,0.68,0,0,0,0.02,0.5,1,1,1,1,1,1,0.73,0.03,0,0,0.16,0.89,1,1,1,0.97,1,1,0.91,0.13,0,0.32,0.85,1,1,1,1,1,1,1,0.96,0.27,0,0.97,1,1,1,1,1,1,1,1,0.99,0.43,0,0.21,0.58,0.93,0.97,0.95,0.88,1,1,1,1,0.42,0.02,0,0,0.07,0.39,0.35,0.4,0.98,1,1,1,0.76,0.06,0,0,0,0,0.02,0.2,0.95,1,1,1,0.9,0.1,0,0,0,0,0,0.16,0.92,1,1,1,0.97,0.12,0,0,0,0,0,0.1,0.79,1,1,1,1,0.19,0,0,0,0,0,0.07,0.45,1,1,1,1,0.46,0,0,0,0,0,0.05,0.27,0.98,1,1,1,0.56,0,0,0,0,0,0.02,0.1,0.94,1,1,1,0.64,0,0,0,0,0,0.02,0.07,0.89,1,1,1,0.75,0,0,0,0,0,0.01,0.1,0.66,0.97,1,1,0.84,0,0,0,0,0,0,0.05,0.27,0.89,0.97,0.98,0.81],"2":[0,0,0.15,0.75,0.92,0.86,0.5,0.08,0,0,0,0,0,0.28,0.95,0.99,1,1,0.99,0.77,0.22,0,0,0,0.16,0.92,1,1,1,1,1,0.96,0.9,0.2,0,0,0.48,1,1,0.99,0.94,0.96,0.98,1,1,0.7,0.01,0,0.89,1,1,0.9,0.49,0.39,0.64,0.98,1,0.93,0.21,0,0.77,0.97,0.94,0.53,0.04,0.06,0.11,0.76,0.98,0.99,0.38,0.01,0.04,0.56,0.84,0.27,0.03,0,0.02,0.67,0.96,1,0.5,0.01,0,0.02,0.16,0.02,0,0,0.02,0.77,0.98,1,0.43,0,0,0,0,0,0,0,0.47,0.99,1,0.97,0.24,0.01,0,0,0,0,0,0.33,0.97,1,1,0.8,0.05,0,0,0,0,0,0.26,0.91,1,1,0.97,0.32,0,0,0,0,0,0.36,0.99,1,1,0.99,0.47,0,0,0,0,0,0.14,0.98,0.96,1,0.98,0.62,0.05,0,0,0,0,0,0.67,0.98,0.96,0.98,0.71,0.36,0.12,0,0,0,0,0.14,0.94,1,1,1,0.85,0.65,0.6,0.61,0.6,0.38,0,0.36,0.98,1,1,1,0.98,0.98,1,1,0.98,0.73,0,0.38,0.99,1,1,1,1,1,1,0.97,1,0.89,0,0.16,0.86,0.89,0.88,0.88,0.84,0.85,0.82,0.81,0.78,0.77],"3":[0,0,0.29,0.86,0.93,0.93,0.86,0.46,0.07,0,0,0,0.04,0.5,0.93,1,1,1,1,1,0.73,0.12,0,0,0.73,1,1,1,1,1,1,1,1,0.77,0.07,0,0.79,1,1,1,0.96,0.96,1,1,1,0.96,0.38,0,0.09,0.79,0.95,0.7,0.45,0.43,0.52,0.96,1,0.98,0.52,0,0,0.16,0.36,0.05,0.05,0.04,0.36,0.75,1,1,0.71,0,0,0,0,0,0,0.05,0.2,0.73,1,1,0.59,0,0,0,0,0,0.43,0.62,0.91,1,1,0.96,0.3,0.04,0,0,0,0.05,0.84,0.98,1,1,1,0.73,0.12,0.04,0,0,0,0,0.71,1,1,1,1,0.89,0.16,0.04,0,0,0,0,0.54,0.88,0.93,0.98,1,1,0.79,0.04,0,0,0,0,0,0.04,0.14,0.61,0.96,1,0.98,0.54,0,0,0,0.04,0,0,0.02,0.32,0.71,1,1,0.86,0,0.04,0.41,0.75,0.21,0.04,0.12,0.29,0.86,0.96,1,0.93,0,0.38,0.98,0.96,0.89,0.77,0.71,0.86,0.98,1,1,0.89,0,0.5,0.98,1,1,1,1,1,1,1,1,0.7,0,0.09,0.62,0.98,1,1,1,1,1,1,0.88,0.21,0,0,0.02,0.27,0.64,0.88,0.89,0.86,0.86,0.55,0.21,0.02],"4":[0,0,0,0,0,0.9,1,1,0.5,0,0,0,0,0,0,0,0.3,1,1,1,0.75,0,0,0,0,0,0,0,0.8,1,1,1,0.8,0,0,0,0,0,0,0.3,1,1,1,1,0.9,0,0,0,0,0,0,0.55,1,1,1,1,1,0.2,0,0,0,0,0.05,0.95,1,1,1,1,1,0.35,0,0,0,0,0.5,1,1,1,1,1,1,0.3,0,0,0,0,0.75,1,1,0.8,0.7,1,1,0.45,0,0,0,0.2,1,1,1,0.5,0.45,1,1,0.7,0,0,0,0.4,1,1,0.7,0.5,0.4,0.95,1,0.8,0,0,0,0.85,1,1,0.65,0.4,0.45,0.9,1,0.9,0.15,0,0.3,1,1,1,0.65,0.45,0.5,0.9,1,1,0.45,0,0.7,1,1,1,1,1,1,1,1,1,1,0.6,1,1,1,1,1,1,1,1,1,1,1,0.8,0.15,0.9,1,1,1,1,1,1,1,1,1,0.95,0,0.6,1,1,1,1,1,1,1,1,1,0.7,0,0.05,0.2,0.25,0.3,0.2,0.25,0.55,1,1,0.9,0.05,0,0,0,0,0,0,0.05,0.25,0.85,1,0.8,0],"5":[0,1,1,1,1,1,1,1,1,0.33,0,0,0.5,1,1,1,1,1,1,1,1,0.5,0,0,0.67,1,1,1,1,1,1,1,1,0.5,0,0,0.67,1,1,1,0.67,0.67,0.67,0.5,0.33,0.17,0,0,0,1,1,0.83,0.33,0.33,0.25,0.08,0,0,0,0,0,1,1,1,0.58,0.58,0.5,0.33,0,0,0,0,0,1,1,1,1,1,1,1,1,0.58,0.08,0,0,1,1,1,1,1,1,1,1,1,0.58,0,0,0.67,1,1,1,1,1,1,1,1,0.92,0.17,0,0.08,0.75,0.92,0.33,0.17,0.17,0.58,1,1,1,0.58,0,0,0.17,0,0,0,0,0,0.5,1,1,1,0,0,0,0,0,0,0,0,0.08,1,1,1,0,0,0,0,0,0,0,0,0.17,1,1,1,0,0.08,0.67,0.25,0,0,0,0.17,0.83,1,1,1,0,0.5,1,1,1,0.5,0.83,1,1,1,1,0.83,0,0.42,1,1,1,1,1,1,1,1,1,0.42,0,0.17,0.58,1,1,1,1,1,1,1,0.58,0,0,0,0,0.17,0.33,0.75,0.83,0.5,0.33,0.25,0,0],"6":[0,0,0,0.12,0.38,0.75,1,0.75,0.25,0,0,0,0,0,0.06,0.62,1,1,1,1,1,0.31,0,0,0,0.06,0.69,1,1,1,1,1,1,0.19,0,0,0,0.31,1,1,1,1,1,1,0.75,0,0,0,0,0.56,1,1,0.88,0.56,0.62,0.62,0.31,0,0,0,0.5,0.88,1,1,0.75,0.62,0.38,0.38,0.25,0,0,0,0.5,1,1,1,0.88,1,1,1,0.81,0.31,0,0,0.25,1,1,1,1,1,1,1,1,1,0.12,0,0.38,1,1,1,1,1,1,1,1,1,0.81,0.06,0.5,1,1,1,1,0.75,0.5,0.62,1,1,1,0.38,0.25,1,1,1,0.94,0.06,0.12,0.19,0.56,1,1,0.81,0,0.88,1,1,0.75,0.12,0,0,0.31,0.94,1,0.75,0,0.75,1,1,0.75,0.12,0,0,0.38,0.88,1,1,0,0.44,1,1,0.94,0.38,0.25,0.25,0.38,0.94,1,1,0,0,0.88,1,1,0.81,0.25,0.38,0.69,1,1,0.88,0,0,0.38,1,1,1,1,1,1,1,1,0.5,0,0,0,0.5,0.94,1,1,1,1,1,0.75,0.06,0,0,0,0,0.31,0.81,1,0.88,0.88,0.56,0.19,0],"7":[0.5,0.75,1,1,1,1,1,1,1,1,0.83,0,0.92,1,1,1,1,1,1,1,1,1,1,0.5,0.67,1,1,1,1,1,1,1,1,1,1,1,0.58,1,1,1,1,1,1,1,1,1,1,1,0,0.46,0.5,0.5,0.46,0.46,0.5,0.75,1,1,1,0.88,0,0,0,0,0,0,0,0.58,1,1,1,0.54,0,0,0,0,0,0,0,0.83,1,1,1,0.25,0,0,0,0,0,0,0,0.96,1,1,1,0.12,0,0,0,0,0,0,0.42,1,1,1,0.79,0.08,0,0,0,0,0,0,0.67,1,1,1,0.62,0,0,0,0,0,0,0.04,0.88,1,1,1,0.5,0,0,0,0,0,0,0.25,1,1,1,1,0.21,0,0,0,0,0,0,0.25,1,1,1,1,0.08,0,0,0,0,0,0,0.58,1,1,1,1,0.04,0,0,0,0,0,0,0.71,1,1,1,0.67,0,0,0,0,0,0,0,0.75,1,1,1,0.5,0,0,0,0,0,0,0,0.75,1,1,1,0.33,0,0,0,0,0,0,0,0.54,1,0.92,0.92,0.33,0,0],"8":[0,0,0.12,0.62,1,0.88,0.25,0.12,0,0,0,0,0,0.25,1,1,1,1,1,0.69,0.19,0,0,0,0.19,1,1,1,1,1,1,1,0.81,0.19,0,0,0.88,1,1,1,1,1,1,1,1,0.62,0.12,0,1,1,1,1,0.25,0.25,0.69,1,1,1,0.12,0,0.81,1,1,0.81,0.12,0,0.19,0.94,1,1,0.25,0,0.25,1,1,1,0.12,0,0.12,1,1,1,0.25,0,0,0.81,1,1,0.94,0.25,0.62,1,1,1,0.25,0,0,0.25,1,1,1,1,1,1,1,0.75,0,0,0,0.06,1,1,1,1,1,1,1,0.81,0.12,0,0,0.44,1,1,1,1,1,1,1,1,0.56,0.06,0,0.81,1,1,0.94,0.31,0.25,0.56,1,1,1,0.38,0,0.88,1,1,0.75,0,0,0.12,0.88,1,1,0.62,0,0.81,1,1,0.94,0.06,0,0.06,0.88,1,1,0.88,0,0.44,1,1,1,0.69,0.25,0.56,1,1,1,1,0,0.12,1,1,1,1,0.94,1,1,1,1,0.75,0,0,0.31,1,1,1,1,1,1,1,1,0.31,0,0,0,0.19,0.56,1,1,1,1,0.81,0.25,0],"9":[0,0,0.19,0.62,0.88,0.88,0.88,0.38,0,0,0,0,0,0.22,0.78,0.94,1,1,1,0.94,0.59,0.06,0,0,0.19,0.75,0.97,1,1,1,1,1,1,0.81,0.06,0,0.62,0.97,1,1,1,1,1,1,1,1,0.44,0,0.75,1,1,0.97,0.59,0.31,0.5,0.88,1,1,0.91,0.03,0.81,1,1,0.75,0.22,0.12,0.06,0.44,1,1,1,0.34,0.88,1,1,0.75,0.12,0,0,0.28,0.88,1,1,0.56,0.69,1,1,0.84,0.12,0,0,0.25,0.88,1,1,0.72,0.12,0.88,1,1,0.69,0.38,0.28,0.66,1,1,1,0.94,0,0.59,1,1,1,1,1,1,1,1,1,0.94,0,0.16,0.94,1,1,1,1,1,1,1,1,0.94,0,0,0.19,0.91,1,1,1,0.94,0.94,1,1,0.94,0,0,0,0.09,0.19,0.44,0.53,0.66,0.78,1,1,0.88,0,0,0,0,0.25,0.25,0.38,0.47,0.94,1,1,0.66,0,0,0,0.31,0.5,0.47,0.66,0.94,1,1,1,0.38,0,0,0,0.69,1,1,1,1,1,1,0.97,0,0,0,0.06,0.88,1,1,1,1,1,0.97,0.25,0,0,0,0,0.38,0.84,0.94,0.94,0.88,0.69,0.12,0,0]};
+
+  function readDigitsByTemplate(canvas) {
+    const w = canvas.width, h = canvas.height;
+    const px = canvas.getContext('2d').getImageData(0, 0, w, h).data;
+    const ink = new Uint8Array(w * h);
+    for (let j = 0; j < w * h; j++) ink[j] = px[j * 4] < 128 ? 1 : 0;
+    const seen = new Uint8Array(w * h), blobs = [];
+    for (let s0 = 0; s0 < w * h; s0++) {
+      if (!ink[s0] || seen[s0]) continue;
+      const pts = [], stack = [s0]; seen[s0] = 1;
+      let x0 = w, x1 = 0, y0 = h, y1 = 0;
+      while (stack.length) {
+        const q = stack.pop(); pts.push(q);
+        const y = (q / w) | 0, x = q - y * w;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const n = ny * w + nx; if (ink[n] && !seen[n]) { seen[n] = 1; stack.push(n); }
+        }
+      }
+      blobs.push({ pts, x0, x1, y0, y1 });
+    }
+    if (!blobs.length) return null;
+    const maxH = Math.max(...blobs.map(b => b.y1 - b.y0 + 1));
+    const digits = blobs.filter(b => b.y1 - b.y0 + 1 >= maxH * 0.55).sort((a, b) => a.x0 - b.x0);
+    let text = '', worst = 0;
+    for (const b of digits) {
+      const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1, grid = new Float32Array(bw * bh);
+      for (const q of b.pts) { const y = (q / w) | 0, x = q - y * w; grid[(y - b.y0) * bw + (x - b.x0)] = 1; }
+      const cell = new Float32Array(TW * TH);
+      for (let i = 0; i < TH; i++) {
+        const ya = Math.floor(i * bh / TH), yb = Math.max(ya + 1, Math.floor((i + 1) * bh / TH));
+        for (let j = 0; j < TW; j++) {
+          const xa = Math.floor(j * bw / TW), xb = Math.max(xa + 1, Math.floor((j + 1) * bw / TW));
+          let sum = 0; for (let y = ya; y < yb; y++) for (let x = xa; x < xb; x++) sum += grid[y * bw + x];
+          cell[i * TW + j] = sum / ((yb - ya) * (xb - xa));
+        }
+      }
+      let best = null, bestD = Infinity;
+      for (const d in DIGITS) {
+        const t = DIGITS[d]; let e = 0;
+        for (let i = 0; i < t.length; i++) e += (cell[i] - t[i]) ** 2;
+        e /= t.length; if (e < bestD) { bestD = e; best = d; }
+      }
+      if (bestD > 0.2) continue;              // not a digit (left-over outline, emblem piece)
+      text += best; worst = Math.max(worst, bestD);
+    }
+    return /^\d{1,3}$/.test(text) ? { text, worst } : null;
+  }
+
+  async function readScoreAt(w, img, sx0, sx1, y, p) {
+    // First choice: match digit shapes against the game's digits.
+    const tc = cropRow(img, sx0, y - p * 0.42, sx1, y + p * 0.42, 0.14, 0.25, 64, { sides: true });
+    const tm = readDigitsByTemplate(tc);
+    if (window.__mkDump) window.__mkDump(`s${Math.round(y)}_tmpl_${tm ? tm.text + '_' + tm.worst.toFixed(3) : 'none'}`, tc.toDataURL('image/png'));
+    if (tm && tm.worst <= 0.15) return { score: parseInt(tm.text, 10), conf: 95, dy: tc._dy, inkRight: tc._inkRight };
+    if (tc._inkCount < 64 * 64 * 0.02) return null;    // nothing there (beyond the list): skip the slow readers
+    // Otherwise read the score several ways (two slant corrections x block / single-line mode) and let the
+    // readings vote, weighted by confidence. Single readings of this font often confuse 1/4/7.
+    const votes = new Map(); let meta = null;
+    for (const [shear, psm] of [[0.2, '6'], [0.08, '6'], [0.2, '7'], [0.08, '7'], [0.14, '6']]) {
+      await w.setParameters({ tessedit_pageseg_mode: psm });
+      const crop = cropRow(img, sx0, y - p * 0.42, sx1, y + p * 0.42, shear, 0.25, 64, { sides: true });
+      const { data } = await w.recognize(crop);
+      const t = data.text.replace(/\D/g, '');
+      if (window.__mkDump) window.__mkDump(`s${Math.round(y)}_${shear}_${psm}_${t}_${Math.round(data.confidence)}`, crop.toDataURL('image/png'));
+      if (!meta) meta = { dy: crop._dy, inkRight: crop._inkRight };
+      if (/^\d{1,3}$/.test(t) && data.confidence > 20) votes.set(t, (votes.get(t) || 0) + data.confidence);
+    }
+    await w.setParameters({ tessedit_pageseg_mode: '7' });
+    if (!votes.size) return null;
+    const [t, sum] = [...votes].sort((a, b) => b[1] - a[1])[0];
+    return { score: parseInt(t, 10), conf: Math.min(100, sum / 2), dy: meta.dy, inkRight: meta.inkRight };
+  }
+
+  async function scanByRows(w, img, maxRows) {
+    await w.setParameters({ tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: '11' });
+    let col = null;
+    for (const shear of [0, 0.2]) {
+      const canvas = prepAdaptive(img, shear);
+      const { data } = await w.recognize(canvas);
+      col = findScoreColumn(data.words || [], canvas);
+      if (col) break;
+    }
+    if (!col) { await w.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: PAGE_PSM }); return null; }
+    const { pitch: p, y0 } = col;
+    const W = img.naturalWidth, H = img.naturalHeight;
+    const ks = [];
+    for (let k = Math.floor(-y0 / p); k <= Math.ceil((H - y0) / p); k++) {
+      const y = y0 + k * p; if (y - p * 0.45 >= 0 && y + p * 0.45 <= H) ks.push(k);
+    }
+    try {
+      await w.setParameters({ tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: '7' });
+      const scored = [];
+      for (const k of ks) {
+        let y = y0 + k * p;
+        const R = col.rightAt(y);
+        const sx0 = Math.max(0, R - L.scoreFrom * p), sx1 = Math.min(W, R - L.scoreTo * p);
+        if (sx1 - sx0 < p * 0.8) continue;
+        let r = await readScoreAt(w, img, sx0, sx1, y, p);
+        // re-centre on the actual text if the row estimate drifted, and read again
+        if (r && Math.abs(r.dy) > p * 0.08) {
+          y += r.dy;
+          r = (await readScoreAt(w, img, sx0, sx1, y, p)) || r;
+        }
+        if (window.__mkLog) window.__mkLog('ROW ' + JSON.stringify({ k, y, R, p, score: r && r.score, conf: r && r.conf }));
+        if (r && r.conf >= 40) scored.push({ k, y, R, score: r.score, inkRight: r.inkRight });
+      }
+      // keep the longest chain of rows (the list), allowing one unreadable row in between,
+      // and ignoring stray numbers elsewhere in the photo
+      let run = [], cur = [];
+      for (const r of scored) { if (cur.length && r.k > cur[cur.length - 1].k + 2) cur = []; cur.push(r); if (cur.length > run.length) run = cur.slice(); }
+      run = run.slice(0, maxRows);
+      // refine the score column's right edge from where the digits really are (the bars can tilt)
+      const meas = run.filter(r => r.inkRight != null);
+      if (meas.length >= 3) {
+        const n = meas.length, my = meas.reduce((a, r) => a + r.y, 0) / n, mx = meas.reduce((a, r) => a + r.inkRight, 0) / n;
+        const vy = meas.reduce((a, r) => a + (r.y - my) ** 2, 0);
+        const b = vy > 0 ? meas.reduce((a, r) => a + (r.y - my) * (r.inkRight - mx), 0) / vy : 0;
+        for (const r of run) r.R = mx + b * (r.y - my);
+      }
+      await w.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '7' });
+      const rows = [];
+      for (const r of run) {
+        const nx0 = Math.max(0, r.R - L.nameFrom * p), nx1 = r.R - L.nameTo * p;
+        let crop = cropRow(img, nx0, r.y - p * 0.42, nx1, r.y + p * 0.42);
+        // the photo may be slightly rotated, so the name can sit a bit higher/lower than the score
+        if (Math.abs(crop._dyBand) > p * 0.05) {
+          const ny = r.y + crop._dyBand;
+          crop = cropRow(img, nx0, ny - p * 0.38, nx1, ny + p * 0.38);
+        }
+        let { data } = await w.recognize(crop);
+        if (letters(data.text) < 2) {
+          // Very short names (e.g. "N"): read a tight, enlarged crop as a single word / character.
+          const tight = tightCrop(crop, 2);
+          if (tight) for (const psm of ['8', '10']) {
+            await w.setParameters({ tessedit_pageseg_mode: psm });
+            const { data: d2 } = await w.recognize(tight);
+            if (letters(d2.text) >= 1 && d2.confidence > (letters(data.text) ? data.confidence : -1)) {
+              // keep positions in the original crop's scale: one word spanning the ink
+              const unitScale = 1 / 2;
+              data = { text: d2.text, confidence: d2.confidence, words: [{ text: d2.text.trim(), confidence: d2.confidence,
+                bbox: { x0: tight._x0, x1: tight._x0 + (tight.width - 40) * unitScale, y0: 0, y1: 1 } }] };
+            }
+          }
+          await w.setParameters({ tessedit_pageseg_mode: '7' });
+        }
+        if (window.__mkDump) window.__mkDump(`n${r.k}`, crop.toDataURL('image/png'));
+        const unit = crop.height;   // express x in row heights so rows line up with each other
+        const words = (data.words || []).map(wd => ({ text: wd.text.trim(), x0: wd.bbox.x0 / unit, x1: wd.bbox.x1 / unit, y0: r.k, y1: r.k + 1, y: r.k }))
+          .filter(wd => wd.text);
+        words.push({ text: String(r.score), x0: 999, x1: 1000, y0: r.k, y1: r.k + 1, y: r.k });
+        rows.push(words);
+      }
+      return parseRows(rows, { minNameLetters: 1 }).map(r => ({ name: r.name, score: r.score }));
+    } finally {
+      await w.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: PAGE_PSM });
     }
   }
 
@@ -688,7 +1107,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     try {
       const w = await getWorker();
       let allRows = [];
-      const VARIANTS = [{ invert: true, shear: 0 }, { invert: true, shear: 0.2 }, { invert: false, shear: 0 }];
+      const VARIANTS = [{ adaptive: true, shear: 0.2 }, { adaptive: true, shear: 0 }, { invert: true, shear: 0 }, { invert: true, shear: 0.2 }, { invert: false, shear: 0 }];
       const passes = files.length * VARIANTS.length;
       let pass = 0;
       for (let f = 0; f < files.length; f++) {
@@ -697,19 +1116,28 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
         let best = [];
         let bestText = '', bestCanvas = null;
         let bestQuality = -1;
-        for (let v = 0; v < VARIANTS.length; v++) {
+        // Real photos: find the rows from the score column and read each row on its own.
+        progressBase = pass / passes; progressSpan = 1 / passes;
+        $('status').textContent = `Reading photo ${f + 1} of ${files.length}…`;
+        const byRows = await scanByRows(w, img, state.mode);
+        if (byRows && byRows.length >= 3) {
+          best = byRows; bestQuality = Infinity;
+          bestText = byRows.map(r => `${r.name}  ${r.score}`).join('\n');
+        }
+        for (let v = 0; v < VARIANTS.length && bestQuality !== Infinity; v++) {
           // The last (plain greyscale) version is only a fallback when the others found too few rows.
           if (v === VARIANTS.length - 1 && best.length >= Math.min(12, state.mode)) break;
           progressBase = pass / passes; progressSpan = 1 / passes; pass++;
           $('status').textContent = `Reading photo ${f + 1} of ${files.length}…`;
-          const canvas = prepCanvas(img, VARIANTS[v].invert, VARIANTS[v].shear);
+          const canvas = VARIANTS[v].adaptive ? prepAdaptive(img, VARIANTS[v].shear) : prepCanvas(img, VARIANTS[v].invert, VARIANTS[v].shear);
+          if (window.__mkDump) window.__mkDump(v, canvas.toDataURL('image/png'));
           const { data } = await w.recognize(canvas);
           const rows = parseRows(rowsFromOCR(data));
           // Prefer more rows; on a tie, the version the reader was more confident about.
           const quality = rows.length * 1000 + (data.confidence || 0);
           if (quality > bestQuality) { bestQuality = quality; best = rows; bestText = data.text; bestCanvas = canvas; }
         }
-        if (best.length) {
+        if (best.length && bestCanvas) {
           $('status').textContent = `Checking scores in photo ${f + 1}…`;
           await rereadScores(w, bestCanvas, best);
         }
@@ -736,7 +1164,7 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   }
 
   // Expose parser for testing
-  window.__mk = { parseRows, shortName, autoTag: n => autoTag(n), computeTeams, state: () => state };
+  window.__mk = { parseRows, shortName, prepAdaptive, prepCanvas, getWorker: () => getWorker(), autoTag: n => autoTag(n), computeTeams, state: () => state };
 
   load();
   renderAll();
