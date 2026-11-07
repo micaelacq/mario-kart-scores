@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Team Scores">
+<meta name="theme-color" content="#14161c">
+<title>Lounge Team Scores</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #f3f4f7;
+  --card: #ffffff;
+  --ink: #15171c;
+  --ink-mid: #4a4f5c;
+  --ink-light: #8a8f9c;
+  --line: #e1e3ea;
+  --accent: #e5322d;
+  --accent-ink: #ffffff;
+  --accent-soft: #fde8e7;
+  --gold: #d4a017;
+  --silver: #9aa3ad;
+  --bronze: #b4703e;
+  --warn: #b26a00;
+  --warn-soft: #fff4e0;
+  --ok: #1d8a4e;
+  --input: #f6f7fa;
+  --radius: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1115; --card: #1a1d24; --ink: #f1f2f5; --ink-mid: #b7bbc6; --ink-light: #7d8290;
+    --line: #2a2e38; --accent-soft: #3a1817; --warn: #ffb547; --warn-soft: #33270f; --input: #22262f; --ok: #43c07e;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1115; --card: #1a1d24; --ink: #f1f2f5; --ink-mid: #b7bbc6; --ink-light: #7d8290;
+  --line: #2a2e38; --accent-soft: #3a1817; --warn: #ffb547; --warn-soft: #33270f; --input: #22262f; --ok: #43c07e;
+}
+html { -webkit-text-size-adjust: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--ink); min-height: 100vh;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+header {
+  background: #14161c; color: #fff;
+  padding: calc(env(safe-area-inset-top) + 12px) 16px 12px;
+  display: flex; align-items: center; gap: 10px; position: sticky; top: 0; z-index: 10;
+}
+header .flag { width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0; }
+header h1 { font-size: 17px; font-weight: 700; letter-spacing: .01em; }
+header p { font-size: 11px; color: #a9aebb; }
+main { max-width: 560px; margin: 0 auto; padding: 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; }
+.card h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-mid); margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.label { font-size: 12px; color: var(--ink-light); margin: 10px 0 6px; font-weight: 600; }
+.seg { display: flex; background: var(--input); border-radius: 10px; padding: 3px; gap: 3px; }
+.seg button { flex: 1; border: 0; background: transparent; color: var(--ink-mid); font: inherit; font-weight: 600; font-size: 14px; padding: 9px 0; border-radius: 8px; cursor: pointer; }
+.seg button.on { background: var(--accent); color: var(--accent-ink); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips button { border: 1px solid var(--line); background: var(--input); color: var(--ink); font: inherit; font-size: 14px; font-weight: 600; padding: 8px 12px; border-radius: 999px; cursor: pointer; min-width: 52px; }
+.chips button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.row { display: flex; gap: 8px; }
+.btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 12px; font: inherit; font-weight: 700; font-size: 15px; padding: 14px 10px; cursor: pointer; background: var(--accent); color: var(--accent-ink); }
+.btn.alt { background: var(--input); color: var(--ink); border: 1px solid var(--line); }
+.btn.small { flex: 0 0 auto; padding: 8px 12px; font-size: 13px; border-radius: 10px; }
+.btn:disabled { opacity: .5; }
+.btn svg { width: 20px; height: 20px; }
+input[type=file] { display: none; }
+.status { font-size: 13px; color: var(--ink-mid); margin-top: 10px; min-height: 18px; }
+.progress { height: 6px; background: var(--input); border-radius: 3px; overflow: hidden; margin-top: 8px; display: none; }
+.progress div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.thumbs { display: flex; gap: 6px; overflow-x: auto; margin-top: 10px; }
+.thumbs img { height: 64px; border-radius: 6px; border: 1px solid var(--line); }
+.stepper { display: flex; align-items: center; gap: 8px; }
+.stepper button { width: 36px; height: 36px; border-radius: 10px; border: 1px solid var(--line); background: var(--input); color: var(--ink); font-size: 20px; font-weight: 700; cursor: pointer; }
+.stepper span { min-width: 28px; text-align: center; font-weight: 700; font-size: 17px; }
+.hint { font-size: 12px; color: var(--ink-light); margin-top: 6px; line-height: 1.4; }
+/* Results */
+.team { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; padding: 10px 4px; border-bottom: 1px solid var(--line); }
+.team:last-child { border-bottom: 0; }
+.rank { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px; background: var(--input); color: var(--ink); }
+.rank.r1 { background: var(--gold); color: #fff; } .rank.r2 { background: var(--silver); color: #fff; } .rank.r3 { background: var(--bronze); color: #fff; }
+.team .tag { font-weight: 800; font-size: 17px; }
+.team .members { font-size: 12px; color: var(--ink-light); margin-top: 2px; overflow-wrap: anywhere; }
+.team .total { text-align: right; font-weight: 800; font-size: 22px; font-variant-numeric: tabular-nums; }
+.team .gap { font-size: 11px; color: var(--ink-light); font-weight: 600; }
+.team .warnline { font-size: 11px; color: var(--warn); font-weight: 600; margin-top: 2px; }
+.warnbox { background: var(--warn-soft); color: var(--warn); border-radius: 10px; padding: 10px 12px; font-size: 13px; font-weight: 600; margin-bottom: 10px; line-height: 1.4; }
+.empty { color: var(--ink-light); font-size: 14px; text-align: center; padding: 18px 0; }
+/* Player list */
+.plist { display: flex; flex-direction: column; gap: 6px; }
+.prow { display: grid; grid-template-columns: 54px 1fr 64px 30px; gap: 6px; align-items: center; }
+.prow.head { font-size: 11px; color: var(--ink-light); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.prow input { width: 100%; min-width: 0; font: inherit; font-size: 16px; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--input); color: var(--ink); }
+.prow input.tagin { text-transform: uppercase; font-weight: 700; text-align: center; padding: 8px 4px; }
+.prow input.tagin.override { border-color: var(--accent); }
+.prow input.score { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
+.prow.updated input.score { border-color: var(--ok); }
+.prow .del { border: 0; background: transparent; color: var(--ink-light); font-size: 20px; cursor: pointer; }
+details summary { cursor: pointer; font-size: 13px; color: var(--ink-mid); font-weight: 600; margin-top: 10px; }
+details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); background: var(--input); padding: 8px; border-radius: 8px; margin-top: 6px; max-height: 220px; overflow: auto; }
+.toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; font-size: 14px; }
+.toggle input { width: 20px; height: 20px; accent-color: var(--accent); }
+.toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: #14161c; color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 14px; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20; }
+.toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <svg class="flag" viewBox="0 0 30 30" aria-hidden="true"><rect width="30" height="30" rx="8" fill="#e5322d"/><g fill="#fff"><rect x="7" y="7" width="4" height="4"/><rect x="15" y="7" width="4" height="4"/><rect x="11" y="11" width="4" height="4"/><rect x="19" y="11" width="4" height="4"/><rect x="7" y="15" width="4" height="4"/><rect x="15" y="15" width="4" height="4"/><rect x="11" y="19" width="4" height="4"/><rect x="19" y="19" width="4" height="4"/></g></svg>
+  <div>
+    <h1>Lounge Team Scores</h1>
+    <p>Scan race results · total by team tag</p>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Event setup</h2>
+    <div class="label">Players</div>
+    <div class="seg" id="modeSeg">
+      <button data-mode="12">12 players</button>
+      <button data-mode="24">24 players</button>
+    </div>
+    <div class="label">Format</div>
+    <div class="chips" id="formatChips"></div>
+    <div class="label">Tag length (characters at start of name)</div>
+    <div class="stepper">
+      <button id="tagMinus" aria-label="Shorter tag">−</button>
+      <span id="tagLen">2</span>
+      <button id="tagPlus" aria-label="Longer tag">+</button>
+    </div>
+    <p class="hint">Leading brackets and symbols such as <b>[</b> or <b>(</b> are skipped. Tap a tag in the player list to override it for one player.</p>
+  </section>
+
+  <section class="card">
+    <h2>Scan results</h2>
+    <div class="row">
+      <button class="btn" id="camBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        Camera
+      </button>
+      <button class="btn alt" id="photoBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+        Photos
+      </button>
+    </div>
+    <input type="file" id="camInput" accept="image/*" capture="environment">
+    <input type="file" id="photoInput" accept="image/*" multiple>
+    <p class="hint">Photograph the results screen after any race. Each scan reads every player's <b>running total</b> and updates the list below: players already in the list get the new total, and new players are added. For 24 players you can pick several photos at once.</p>
+    <div class="progress" id="progress"><div></div></div>
+    <div class="status" id="status"></div>
+    <div class="thumbs" id="thumbs"></div>
+    <details id="rawWrap" hidden>
+      <summary>Show text read from the photo</summary>
+      <pre id="raw"></pre>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>Team standings <button class="btn alt small" id="copyBtn">Copy</button></h2>
+    <div id="warnings"></div>
+    <div id="standings"></div>
+  </section>
+
+  <section class="card">
+    <h2>Players <span style="font-weight:600;text-transform:none;letter-spacing:0" id="pcount"></span></h2>
+    <div class="plist" id="plist"></div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn alt small" id="addBtn" style="flex:1">+ Add player</button>
+      <button class="btn alt small" id="sortBtn" style="flex:1">Sort by score</button>
+      <button class="btn alt small" id="clearBtn" style="flex:1;color:var(--accent)">New event</button>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+(() => {
+  // ---------- State ----------
+  const FORMATS = { 12: [1, 2, 3, 4, 6], 24: [1, 2, 3, 4, 6, 8, 12] };
+  const STORE_KEY = 'mk-lounge-team-scores-v1';
+  let state = { mode: 12, teamSize: 2, tagLen: 2, players: [] };
+  let lastUpdated = new Set();
+  let uid = 1;
+
+  function load() {
+    try {
+      const s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+      if (s && typeof s === 'object') {
+        state = Object.assign(state, s);
+        state.players = (state.players || []).map(p => ({ id: uid++, name: String(p.name || ''), score: Number(p.score) || 0, tagOverride: p.tagOverride || '' }));
+      }
+    } catch (e) { /* storage unavailable */ }
+    if (!FORMATS[state.mode]) state.mode = 12;
+    if (!FORMATS[state.mode].includes(state.teamSize)) state.teamSize = 2;
+    state.tagLen = Math.min(4, Math.max(1, state.tagLen | 0 || 2));
+  }
+  function save() {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        mode: state.mode, teamSize: state.teamSize, tagLen: state.tagLen,
+        players: state.players.map(p => ({ name: p.name, score: p.score, tagOverride: p.tagOverride }))
+      }));
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---------- Helpers ----------
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 1800); }
+  const formatLabel = n => n === 1 ? 'FFA' : `${n}v${n}`;
+
+  function autoTag(name) {
+    const stripped = name.replace(/^[^\p{L}\p{N}]+/u, '');
+    return Array.from(stripped).slice(0, state.tagLen).join('').toUpperCase();
+  }
+  const tagOf = p => (p.tagOverride || autoTag(p.name)) || '?';
+  const normKey = s => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+
+  function similarity(a, b) {
+    if (a === b) return 1;
+    if (!a.length || !b.length) return 0;
+    const m = a.length, n = b.length; let prev = Array.from({ length: n + 1 }, (_, i) => i);
+    for (let i = 1; i <= m; i++) {
+      const cur = [i];
+      for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return 1 - prev[n] / Math.max(m, n);
+  }
+
+  // ---------- Team computation ----------
+  function computeTeams() {
+    const players = state.players.filter(p => p.name.trim() !== '');
+    let teams;
+    if (state.teamSize === 1) {
+      teams = players.map(p => ({ tag: p.name, members: [p], total: p.score }));
+    } else {
+      const map = new Map();
+      for (const p of players) {
+        const t = tagOf(p);
+        if (!map.has(t)) map.set(t, { tag: t, members: [], total: 0 });
+        const team = map.get(t); team.members.push(p); team.total += p.score;
+      }
+      teams = [...map.values()];
+    }
+    teams.sort((a, b) => b.total - a.total || a.tag.localeCompare(b.tag));
+    teams.forEach(t => t.members.sort((a, b) => b.score - a.score));
+    return { teams, playerCount: players.length };
+  }
+
+  // ---------- Rendering ----------
+  function renderSetup() {
+    document.querySelectorAll('#modeSeg button').forEach(b => b.classList.toggle('on', +b.dataset.mode === state.mode));
+    $('formatChips').innerHTML = FORMATS[state.mode].map(n =>
+      `<button data-size="${n}" class="${n === state.teamSize ? 'on' : ''}">${formatLabel(n)}</button>`).join('');
+    $('tagLen').textContent = state.tagLen;
+  }
+
+  function renderStandings() {
+    const { teams, playerCount } = computeTeams();
+    const warns = [];
+    if (playerCount && playerCount !== state.mode) warns.push(`${playerCount} players found, expected ${state.mode}.`);
+    if (state.teamSize > 1 && playerCount) {
+      const expected = state.mode / state.teamSize;
+      if (teams.length !== expected) warns.push(`${teams.length} tags found, expected ${expected} teams for ${formatLabel(state.teamSize)}. Check the tag length or fix tags below.`);
+    }
+    $('warnings').innerHTML = warns.map(w => `<div class="warnbox">⚠︎ ${esc(w)}</div>`).join('');
+
+    if (!teams.length) { $('standings').innerHTML = '<div class="empty">Scan a results screen or add players to see standings.</div>'; return; }
+    const top = teams[0].total;
+    let rank = 0, prevTotal = null;
+    $('standings').innerHTML = teams.map((t, i) => {
+      if (t.total !== prevTotal) rank = i + 1; prevTotal = t.total;
+      const gap = i === 0 ? '' : `<div class="gap">−${top - t.total}</div>`;
+      const members = state.teamSize === 1 ? '' :
+        `<div class="members">${t.members.map(m => `${esc(m.name)} (${m.score})`).join(' · ')}</div>`;
+      const sizeWarn = state.teamSize > 1 && t.members.length !== state.teamSize
+        ? `<div class="warnline">${t.members.length} player${t.members.length === 1 ? '' : 's'} (expected ${state.teamSize})</div>` : '';
+      return `<div class="team">
+        <div class="rank r${rank}">${rank}</div>
+        <div><div class="tag">${esc(t.tag)}</div>${members}${sizeWarn}</div>
+        <div class="total">${t.total}${gap}</div>
+      </div>`;
+    }).join('');
+  }
+
+  function renderPlayers() {
+    $('pcount').textContent = `${state.players.length}/${state.mode}`;
+    const head = `<div class="prow head"><div>Tag</div><div>Name</div><div style="text-align:right">Score</div><div></div></div>`;
+    $('plist').innerHTML = head + state.players.map(p => `
+      <div class="prow${lastUpdated.has(p.id) ? ' updated' : ''}" data-id="${p.id}">
+        <input class="tagin${p.tagOverride ? ' override' : ''}" data-f="tag" value="${esc(tagOf(p))}" maxlength="12" autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="Tag">
+        <input data-f="name" value="${esc(p.name)}" placeholder="Name" autocomplete="off" spellcheck="false" aria-label="Name">
+        <input class="score" data-f="score" value="${p.score}" inputmode="numeric" pattern="[0-9]*" aria-label="Score">
+        <button class="del" data-del="${p.id}" aria-label="Remove">×</button>
+      </div>`).join('');
+  }
+
+  function renderAll() { renderSetup(); renderStandings(); renderPlayers(); save(); }
+
+  // ---------- Events: setup ----------
+  $('modeSeg').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.mode = +b.dataset.mode;
+    if (!FORMATS[state.mode].includes(state.teamSize)) state.teamSize = 2;
+    renderAll();
+  });
+  $('formatChips').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.teamSize = +b.dataset.size; renderAll();
+  });
+  $('tagMinus').onclick = () => { state.tagLen = Math.max(1, state.tagLen - 1); renderAll(); };
+  $('tagPlus').onclick = () => { state.tagLen = Math.min(4, state.tagLen + 1); renderAll(); };
+
+  // ---------- Events: player list ----------
+  $('plist').addEventListener('input', e => {
+    const row = e.target.closest('.prow'); if (!row || !row.dataset.id) return;
+    const p = state.players.find(x => x.id === +row.dataset.id); if (!p) return;
+    const f = e.target.dataset.f;
+    if (f === 'name') {
+      p.name = e.target.value;
+      if (!p.tagOverride) row.querySelector('.tagin').value = autoTag(p.name);
+    } else if (f === 'score') {
+      p.score = parseInt(e.target.value.replace(/\D/g, ''), 10) || 0;
+    } else if (f === 'tag') {
+      const v = e.target.value.trim().toUpperCase();
+      p.tagOverride = v && v !== autoTag(p.name) ? v : '';
+      e.target.classList.toggle('override', !!p.tagOverride);
+    }
+    renderStandings(); save();
+  });
+  $('plist').addEventListener('click', e => {
+    const id = e.target.dataset.del; if (!id) return;
+    state.players = state.players.filter(p => p.id !== +id); renderAll();
+  });
+  $('addBtn').onclick = () => {
+    state.players.push({ id: uid++, name: '', score: 0, tagOverride: '' }); renderAll();
+    const inputs = $('plist').querySelectorAll('input[data-f="name"]'); inputs[inputs.length - 1]?.focus();
+  };
+  $('sortBtn').onclick = () => { state.players.sort((a, b) => b.score - a.score); renderAll(); };
+  $('clearBtn').onclick = () => {
+    if (state.players.length && !confirm('Clear all players and scores for a new event?')) return;
+    state.players = []; lastUpdated = new Set(); $('thumbs').innerHTML = ''; $('status').textContent = '';
+    $('rawWrap').hidden = true; renderAll();
+  };
+  $('copyBtn').onclick = async () => {
+    const { teams } = computeTeams(); if (!teams.length) return;
+    const lines = [`${formatLabel(state.teamSize)} · ${state.mode} players`];
+    teams.forEach((t, i) => lines.push(`${i + 1}. ${t.tag} — ${t.total}` + (state.teamSize > 1 ? ` (${t.members.map(m => `${m.name} ${m.score}`).join(', ')})` : '')));
+    const text = lines.join('\n');
+    try { await navigator.clipboard.writeText(text); toast('Standings copied'); }
+    catch (e) { prompt('Copy the standings:', text); }
+  };
+
+  // ---------- OCR ----------
+  $('camBtn').onclick = () => $('camInput').click();
+  $('photoBtn').onclick = () => $('photoInput').click();
+  $('camInput').onchange = e => handleFiles([...e.target.files], e.target);
+  $('photoInput').onchange = e => handleFiles([...e.target.files], e.target);
+
+  let worker = null;
+  let progressBase = 0, progressSpan = 1;
+  function setProgress(frac) {
+    $('progress').style.display = 'block';
+    $('progress').firstElementChild.style.width = `${Math.round(Math.min(1, frac) * 100)}%`;
+  }
+  async function getWorker() {
+    if (worker) return worker;
+    if (!window.Tesseract) throw new Error('The text reader could not load. Check your internet connection and reload.');
+    $('status').textContent = 'Loading text reader (first time only)…';
+    worker = await Tesseract.createWorker('eng', 1, {
+      logger: m => { if (m.status === 'recognizing text') setProgress(progressBase + m.progress * progressSpan); }
+    });
+    await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' });
+    return worker;
+  }
+
+  function loadImage(file) {
+    return new Promise((res, rej) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => res({ img, url });
+      img.onerror = () => rej(new Error('Could not open that image.'));
+      img.src = url;
+    });
+  }
+
+  // Build a high-contrast greyscale canvas. invert=true turns light text on dark/coloured bars into dark text on white.
+  function prepCanvas(img, invert) {
+    const target = 1800;
+    const scale = Math.min(3, target / Math.max(img.naturalWidth, img.naturalHeight)) || 1;
+    const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, w, h);
+    const d = ctx.getImageData(0, 0, w, h), px = d.data;
+    let min = 255, max = 0;
+    const g = new Uint8ClampedArray(w * h);
+    for (let i = 0, j = 0; i < px.length; i += 4, j++) {
+      // max channel keeps white text bright on coloured row backgrounds
+      const v = invert ? Math.max(px[i], px[i + 1], px[i + 2]) : (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114);
+      g[j] = v; if (v < min) min = v; if (v > max) max = v;
+    }
+    const range = Math.max(1, max - min);
+    for (let i = 0, j = 0; i < px.length; i += 4, j++) {
+      let v = ((g[j] - min) / range) * 255;
+      if (invert) v = 255 - v;
+      px[i] = px[i + 1] = px[i + 2] = v;
+    }
+    ctx.putImageData(d, 0, 0);
+    return c;
+  }
+
+  // Turn one OCR line into {name, score} or null.
+  function parseLine(raw) {
+    let line = raw.replace(/[|¦_~`"“”]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!line) return null;
+    let tokens = line.split(' ');
+    // Running total = last plain number on the line (ignore "+12" race points)
+    let scoreIdx = -1;
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      const t = tokens[i].replace(/[oO]/g, '0').replace(/[lI]/g, '1').replace(/[.,:;]$/, '');
+      if (/^\d{1,3}$/.test(t) && !/^\+/.test(tokens[i])) { scoreIdx = i; tokens[i] = t; break; }
+    }
+    if (scoreIdx < 1) return null;
+    const score = parseInt(tokens[scoreIdx], 10);
+    let nameTokens = tokens.slice(0, scoreIdx).filter(t => !/^\+\d+$/.test(t));
+    // Drop leading placement like "1", "1st", "12th", "1."
+    if (nameTokens.length > 1 && /^\d{1,2}(st|nd|rd|th)?[.)]?$/i.test(nameTokens[0])) nameTokens.shift();
+    // Drop trailing stray race points / short junk
+    while (nameTokens.length > 1 && /^[+\-]?\d{1,2}$/.test(nameTokens[nameTokens.length - 1])) nameTokens.pop();
+    const name = nameTokens.join(' ').replace(/^[^\p{L}\p{N}\[\(]+|[^\p{L}\p{N}\]\)]+$/gu, '').trim();
+    if (!/\p{L}/u.test(name) || name.length < 2) return null;
+    return { name, score };
+  }
+
+  function parseText(text) {
+    const out = [];
+    for (const l of text.split('\n')) { const r = parseLine(l); if (r) out.push(r); }
+    return out;
+  }
+
+  function mergeRows(rows) {
+    // Dedupe within this scan (same player in two overlapping photos): keep the later reading.
+    const merged = [];
+    for (const r of rows) {
+      const k = normKey(r.name);
+      const hit = merged.find(m => similarity(normKey(m.name), k) >= 0.8);
+      if (hit) { hit.score = r.score; } else merged.push({ ...r });
+    }
+    return merged;
+  }
+
+  function applyScan(rows) {
+    lastUpdated = new Set();
+    let updated = 0, added = 0;
+    for (const r of rows) {
+      const k = normKey(r.name);
+      let best = null, bestSim = 0;
+      for (const p of state.players) {
+        const s = similarity(normKey(p.name), k);
+        if (s > bestSim) { bestSim = s; best = p; }
+      }
+      if (best && bestSim >= 0.75) { best.score = r.score; lastUpdated.add(best.id); updated++; }
+      else { const p = { id: uid++, name: r.name, score: r.score, tagOverride: '' }; state.players.push(p); lastUpdated.add(p.id); added++; }
+    }
+    return { updated, added };
+  }
+
+  async function handleFiles(files, input) {
+    input.value = '';
+    if (!files.length) return;
+    $('camBtn').disabled = $('photoBtn').disabled = true;
+    $('thumbs').innerHTML = '';
+    const rawDump = [];
+    try {
+      const w = await getWorker();
+      let allRows = [];
+      const passes = files.length * 2;
+      let pass = 0;
+      for (let f = 0; f < files.length; f++) {
+        const { img, url } = await loadImage(files[f]);
+        $('thumbs').insertAdjacentHTML('beforeend', `<img src="${url}" alt="Scanned photo ${f + 1}">`);
+        let best = [];
+        let bestText = '';
+        for (const invert of [true, false]) {
+          progressBase = pass / passes; progressSpan = 1 / passes; pass++;
+          $('status').textContent = `Reading photo ${f + 1} of ${files.length}…`;
+          const { data } = await w.recognize(prepCanvas(img, invert));
+          const rows = parseText(data.text);
+          if (rows.length > best.length) { best = rows; bestText = data.text; }
+          if (best.length >= state.mode) break;
+        }
+        rawDump.push(`— Photo ${f + 1} —\n${bestText.trim()}`);
+        allRows = allRows.concat(best);
+      }
+      setProgress(1);
+      const rows = mergeRows(allRows);
+      if (!rows.length) {
+        $('status').textContent = 'No names and scores found. Try a straighter, closer photo of the results list, or add players by hand.';
+      } else {
+        const { updated, added } = applyScan(rows);
+        $('status').textContent = `Read ${rows.length} player${rows.length === 1 ? '' : 's'}: ${updated} updated, ${added} new. Check the highlighted scores below.`;
+      }
+      $('raw').textContent = rawDump.join('\n\n');
+      $('rawWrap').hidden = false;
+      renderAll();
+    } catch (err) {
+      $('status').textContent = err.message || String(err);
+    } finally {
+      $('camBtn').disabled = $('photoBtn').disabled = false;
+      setTimeout(() => { $('progress').style.display = 'none'; }, 600);
+    }
+  }
+
+  // Expose parser for testing
+  window.__mk = { parseLine, parseText, autoTag: n => autoTag(n), computeTeams, state: () => state };
+
+  load();
+  renderAll();
+})();
+</script>
+</body>
+</html>
