@@ -108,15 +108,23 @@ enum ScoreParser {
 
     /// Short bits between the name and the score: movement arrows, dots, stray race points.
     private static func isMarker(_ t: String) -> Bool {
-        (letterCount(t) < 2 && t.count <= 3) || t.range(of: #"^[+\-]?\d{1,2}$"#, options: .regularExpression) != nil
+        (letterCount(t) < 2 && t.count <= 3)
+            || t.range(of: #"^[+\-]?\d{1,2}$"#, options: .regularExpression) != nil
+            || (t.count <= 2 && !(t.first?.isUppercase ?? false))     // e.g. a dot read as "oe"
     }
 
     static func cleanName(_ raw: String) -> String {
-        var name = raw
+        var name = raw.trimmingCharacters(in: .whitespaces)
+        // The game's font has no brackets, bars or "!", so one of those right before a capital at the
+        // start of a name is a misread "I" ("[JDaisy" -> "IJDaisy").
+        if name.count >= 2, let f = name.first, "[(|!l".contains(f),
+           name[name.index(after: name.startIndex)].isUppercase {
+            name = "I" + String(name.dropFirst())
+        }
         for ch in ["|", "¦", "_", "~", "`", "\"", "“", "”"] { name = name.replacingOccurrences(of: ch, with: " ") }
         name = name.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        while let f = name.first, !(f.isLetter || f.isNumber || f == "[" || f == "(") { name.removeFirst() }
-        while let l = name.last, !(l.isLetter || l.isNumber || l == "]" || l == ")") { name.removeLast() }
+        while let f = name.first, !(f.isLetter || f.isNumber) { name.removeFirst() }
+        while let l = name.last, !(l.isLetter || l.isNumber) { name.removeLast() }
         return name.trimmingCharacters(in: .whitespaces)
     }
 

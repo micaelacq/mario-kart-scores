@@ -16,6 +16,7 @@ https://micaelacq.github.io/mario-kart-scores/. It can be added to the Home Scre
 - Reads only each player's **name** and the **score on the right**. Ignores the position number, character icon and the up/down/dot movement markers.
 - Names under each team are shown without the tag (it's already the team heading).
 - If the reader confuses look-alike characters in a tag (e.g. IJ read as 1J), teams with those tags are merged automatically.
+- When all players are in but there are more teams than the format allows (a tag was misread), each stray player is placed in the team with room whose tag looks most similar, and flagged with **?** so you can check it.
 - Reads each player's **running total**. A new scan updates players already in the list and adds new ones.
 - **Editable player list** for fixing misread names or scores (the tag is the start of the name). Standings update as you type.
 - Warns when the number of players or teams doesn't match the selected mode.

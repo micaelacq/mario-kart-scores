@@ -178,8 +178,14 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(team.tag).font(.headline.weight(.heavy))
                 if store.teamSize > 1 {
-                    Text(team.members.map { "\(store.shortName($0.name)) (\($0.score))" }.joined(separator: " · "))
+                    Text(team.members.map {
+                        team.guessed.contains($0.id) ? "\($0.name)? (\($0.score))" : "\(store.shortName($0.name)) (\($0.score))"
+                    }.joined(separator: " · "))
                         .font(.caption).foregroundStyle(.secondary)
+                    if !team.guessed.isEmpty {
+                        Text("Tag misread for the player marked ? — placed here as best guess. Fix the name if wrong.")
+                            .font(.caption2.weight(.semibold)).foregroundStyle(.orange)
+                    }
                     if team.members.count != store.teamSize {
                         Text("\(team.members.count) player\(team.members.count == 1 ? "" : "s") (expected \(store.teamSize))")
                             .font(.caption2.weight(.semibold)).foregroundStyle(.orange)

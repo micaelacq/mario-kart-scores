@@ -244,6 +244,54 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   }
 
   // ---------- Team computation ----------
+  // When every player is in but there are more teams than the format allows, some tags were misread.
+  // Move each stray (smallest) team into the team with room whose tag looks most like it, and
+  // remember those players so the standings can flag them as a guess.
+  function tagScore(a, b) {
+    const A = Array.from(canonTag(a)), B = Array.from(canonTag(b)), used = new Set();
+    let sc = 0;
+    A.forEach((c, i) => {
+      const j = B.findIndex((d, k) => d === c && !used.has(k));
+      if (j >= 0) { used.add(j); sc += j === i ? 2 : 1; }
+    });
+    return sc;
+  }
+  // Name a (possibly merged) team after the tag most of its players share, preferring one written in
+  // capitals as typed (a misread like "Daisy" gives "Da"). Players with a different tag are flagged.
+  function nameTeam(team) {
+    const counts = new Map();
+    for (const m of team.members) {
+      const raw = Array.from(m.name.replace(/^[^\p{L}\p{N}]+/u, '')).slice(0, state.tagLen).join('');
+      const t = raw.toUpperCase() || '?';
+      const c = counts.get(t) || { n: 0, caps: 0 };
+      c.n++; if (raw === t) c.caps++;
+      counts.set(t, c);
+    }
+    let best = team.tag, bestScore = -1;
+    for (const [t, c] of counts) { const sc = c.n * 10 + c.caps; if (sc > bestScore) { bestScore = sc; best = t; } }
+    team.tag = best;
+    team.guessed = team.members.filter(m => tagOf(m) !== best).map(m => m.id);
+  }
+
+  function fillShortTeams(teams, playerCount) {
+    const size = state.teamSize, expected = state.mode / size;
+    if (size === 1 || playerCount !== state.mode) return teams;
+    while (teams.length > expected) {
+      const stray = [...teams].sort((a, b) => a.members.length - b.members.length)[0];
+      let target = null, bestScore = -1;
+      for (const t of teams) {
+        if (t === stray || t.members.length + stray.members.length > size) continue;
+        const sc = tagScore(stray.tag, t.tag) * 10 + t.members.length;
+        if (sc > bestScore) { bestScore = sc; target = t; }
+      }
+      if (!target) break;
+      target.members.push(...stray.members);
+      target.total += stray.total;
+      teams.splice(teams.indexOf(stray), 1);
+    }
+    return teams;
+  }
+
   // The text reader sometimes confuses look-alike characters in a tag (IJ -> 1J). If two teams are
   // both short of players and their tags only differ by look-alikes, treat them as one team.
   const LOOKALIKE = { '1': 'I', 'L': 'I', '|': 'I', '!': 'I', '0': 'O', 'Q': 'O', '5': 'S', '8': 'B', '2': 'Z', '6': 'G' };
@@ -276,7 +324,8 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
         if (!map.has(t)) map.set(t, { tag: t, members: [], total: 0 });
         const team = map.get(t); team.members.push(p); team.total += p.score;
       }
-      teams = mergeLookalikeTags([...map.values()]);
+      teams = fillShortTeams(mergeLookalikeTags([...map.values()]), players.length);
+      teams.forEach(nameTeam);
     }
     teams.sort((a, b) => b.total - a.total || a.tag.localeCompare(b.tag));
     teams.forEach(t => t.members.sort((a, b) => b.score - a.score));
@@ -307,13 +356,18 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     $('standings').innerHTML = teams.map((t, i) => {
       if (t.total !== prevTotal) rank = i + 1; prevTotal = t.total;
       const gap = i === 0 ? '' : `<div class="gap">−${top - t.total}</div>`;
+      const guessed = new Set(t.guessed || []);
       const members = state.teamSize === 1 ? '' :
-        `<div class="members">${t.members.map(m => `${esc(shortName(m.name))} (${m.score})`).join(' · ')}</div>`;
+        `<div class="members">${t.members.map(m => guessed.has(m.id)
+          ? `<b style="color:var(--warn)">${esc(m.name)}?</b> (${m.score})`
+          : `${esc(shortName(m.name))} (${m.score})`).join(' · ')}</div>`;
       const sizeWarn = state.teamSize > 1 && t.members.length !== state.teamSize
         ? `<div class="warnline">${t.members.length} player${t.members.length === 1 ? '' : 's'} (expected ${state.teamSize})</div>` : '';
+      const guessWarn = guessed.size
+        ? `<div class="warnline">Tag misread for ${guessed.size === 1 ? 'the player' : 'players'} marked ? — placed here as best guess. Fix the name if wrong.</div>` : '';
       return `<div class="team">
         <div class="rank r${rank}">${rank}</div>
-        <div><div class="tag">${esc(t.tag)}</div>${members}${sizeWarn}</div>
+        <div><div class="tag">${esc(t.tag)}</div>${members}${sizeWarn}${guessWarn}</div>
         <div class="total">${t.total}${gap}</div>
       </div>`;
     }).join('');
@@ -415,13 +469,17 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   }
 
   // Build a high-contrast greyscale canvas. invert=true turns light text on dark/coloured bars into dark text on white.
-  function prepCanvas(img, invert) {
+  // shear > 0 straightens the game's italic font (letters lean right), which reads more reliably.
+  function prepCanvas(img, invert, shear = 0) {
     const target = 1800;
     const scale = Math.min(3, target / Math.max(img.naturalWidth, img.naturalHeight)) || 1;
-    const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
+    const iw = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
+    const w = iw + Math.round(shear * h);
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const ctx = c.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(img, 0, 0, w, h);
+    ctx.setTransform(1, 0, shear, 1, 0, 0);
+    ctx.drawImage(img, 0, 0, iw, h);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     const d = ctx.getImageData(0, 0, w, h), px = d.data;
     let min = 255, max = 0;
     const g = new Uint8ClampedArray(w * h);
@@ -469,18 +527,24 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   const letters = t => (t.match(/\p{L}/gu) || []).length;
   const median = a => { const b = [...a].sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : 0; };
 
-  function readScore(text) {
+  function scoreDigits(text) {
     if (/^\+/.test(text)) return null;                      // "+12" = points this race, not the total
     let t = text.replace(/^[^\p{L}\p{N}+]+/u, '').replace(/[^\p{L}\p{N}]+$/u, '');  // "▲98" "98." -> 98
     t = t.replace(/[oO]/g, '0').replace(/[lI]/g, '1');
-    return /^\d{1,3}$/.test(t) ? parseInt(t, 10) : null;
+    return /^\d{1,3}$/.test(t) ? t : null;
   }
+  const readScore = text => { const t = scoreDigits(text); return t === null ? null : parseInt(t, 10); };
   // Short bits left between the name and the score: movement arrows, dots, stray race points.
-  const isMarker = t => (letters(t) < 2 && Array.from(t).length <= 3) || /^[+\-]?\d{1,2}$/.test(t);
+  const isMarker = t => (letters(t) < 2 && Array.from(t).length <= 3) || /^[+\-]?\d{1,2}$/.test(t)
+    || (Array.from(t).length <= 2 && !/^\p{Lu}/u.test(t));   // e.g. a dot read as "oe"
+
 
   function cleanName(n) {
+    // The game's font has no brackets, bars or "!", so one of those right before a letter at the start of a
+    // name is a misread "I" (e.g. "[JDaisy" -> "IJDaisy").
+    n = n.trim().replace(/^[\[\(|!l](?=\p{Lu})/u, 'I');
     return n.replace(/[|¦_~`"“”]/g, ' ').replace(/\s+/g, ' ')
-      .replace(/^[^\p{L}\p{N}\[\(]+|[^\p{L}\p{N}\]\)]+$/gu, '').trim();
+      .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '').trim();
   }
 
   // Tesseract result -> rows of words [{text, x0, x1, y}]
@@ -581,9 +645,9 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
   // Second pass: read each score box again with a digits-only reader, which is far more
   // reliable for numbers than the general pass (e.g. "98" misread as "08").
   function padRect(canvas, b) {
-    const h = b.y1 - b.y0, pad = Math.round(h * 0.35);
-    const left = Math.max(0, Math.round(b.x0 - pad)), top = Math.max(0, Math.round(b.y0 - pad));
-    return { left, top, width: Math.min(canvas.width - left, Math.round(b.x1 - b.x0 + pad * 2)), height: Math.min(canvas.height - top, Math.round(h + pad * 2)) };
+    const h = b.y1 - b.y0, pad = Math.round(h * 0.35), padX = Math.round(h * 0.6);  // extra sideways room for slanted letters
+    const left = Math.max(0, Math.round(b.x0 - padX)), top = Math.max(0, Math.round(b.y0 - pad));
+    return { left, top, width: Math.min(canvas.width - left, Math.round(b.x1 - b.x0 + padX * 2)), height: Math.min(canvas.height - top, Math.round(h + pad * 2)) };
   }
   async function rereadScores(w, canvas, rows) {
     try {
@@ -607,7 +671,8 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
         if (!okScore(r)) continue;
         const { data } = await w.recognize(canvas, { rectangle: padRect(canvas, r.box) });
         const t = data.text.replace(/\D/g, '');
-        if (/^\d{1,3}$/.test(t)) r.score = parseInt(t, 10);
+        // Only trust the re-read if it has as many digits as the first read (guards against a clipped digit).
+        if (/^\d{1,3}$/.test(t) && t.length === (scoreDigits(r.box.text) || '').length) r.score = parseInt(t, 10);
       }
     } finally {
       await w.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' });
@@ -623,21 +688,26 @@ details pre { white-space: pre-wrap; font-size: 11px; color: var(--ink-light); b
     try {
       const w = await getWorker();
       let allRows = [];
-      const passes = files.length * 2;
+      const VARIANTS = [{ invert: true, shear: 0 }, { invert: true, shear: 0.2 }, { invert: false, shear: 0 }];
+      const passes = files.length * VARIANTS.length;
       let pass = 0;
       for (let f = 0; f < files.length; f++) {
         const { img, url } = await loadImage(files[f]);
         $('thumbs').insertAdjacentHTML('beforeend', `<img src="${url}" alt="Scanned photo ${f + 1}">`);
         let best = [];
         let bestText = '', bestCanvas = null;
-        for (const invert of [true, false]) {
+        let bestQuality = -1;
+        for (let v = 0; v < VARIANTS.length; v++) {
+          // The last (plain greyscale) version is only a fallback when the others found too few rows.
+          if (v === VARIANTS.length - 1 && best.length >= Math.min(12, state.mode)) break;
           progressBase = pass / passes; progressSpan = 1 / passes; pass++;
           $('status').textContent = `Reading photo ${f + 1} of ${files.length}…`;
-          const canvas = prepCanvas(img, invert);
+          const canvas = prepCanvas(img, VARIANTS[v].invert, VARIANTS[v].shear);
           const { data } = await w.recognize(canvas);
           const rows = parseRows(rowsFromOCR(data));
-          if (rows.length > best.length) { best = rows; bestText = data.text; bestCanvas = canvas; }
-          if (best.length >= state.mode) break;
+          // Prefer more rows; on a tie, the version the reader was more confident about.
+          const quality = rows.length * 1000 + (data.confidence || 0);
+          if (quality > bestQuality) { bestQuality = quality; best = rows; bestText = data.text; bestCanvas = canvas; }
         }
         if (best.length) {
           $('status').textContent = `Checking scores in photo ${f + 1}…`;

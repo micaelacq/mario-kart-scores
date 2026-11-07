@@ -9,9 +9,11 @@ struct Player: Identifiable, Codable, Equatable {
 }
 
 struct Team: Identifiable {
-    let tag: String
-    let members: [Player]
-    let total: Int
+    var tag: String
+    var members: [Player]
+    var total: Int
+    /// Players whose own tag differs from the team's: placed here as a best guess after a misread.
+    var guessed: Set<UUID> = []
     var id: String { tag + members.map(\.id.uuidString).joined() }
 }
 
@@ -111,6 +113,62 @@ final class ScoreStore: ObservableObject {
         String(t.map { Self.lookalike[$0] ?? $0 })
     }
 
+    /// When every player is in but there are more teams than the format allows, some tags were misread.
+    /// Move each stray (smallest) team into the team with room whose tag looks most like it.
+    private func fillShortTeams(_ input: [Team], playerCount: Int) -> [Team] {
+        var teams = input
+        let expected = self.playerCount.rawValue / teamSize
+        guard teamSize > 1, playerCount == self.playerCount.rawValue else { return teams }
+        while teams.count > expected {
+            guard let s = teams.indices.min(by: { teams[$0].members.count < teams[$1].members.count }) else { break }
+            var target: Int? = nil
+            var bestScore = -1
+            for t in teams.indices where t != s && teams[t].members.count + teams[s].members.count <= teamSize {
+                let sc = tagScore(teams[s].tag, teams[t].tag) * 10 + teams[t].members.count
+                if sc > bestScore { bestScore = sc; target = t }
+            }
+            guard let t = target else { break }
+            teams[t].members += teams[s].members
+            teams[t].members.sort { $0.score > $1.score }
+            teams[t].total += teams[s].total
+            teams.remove(at: s)
+        }
+        return teams
+    }
+
+    private func tagScore(_ a: String, _ b: String) -> Int {
+        let A = Array(canonTag(a)), B = Array(canonTag(b))
+        var used = Set<Int>(), score = 0
+        for (i, c) in A.enumerated() {
+            if let j = B.indices.first(where: { B[$0] == c && !used.contains($0) }) {
+                used.insert(j); score += (j == i ? 2 : 1)
+            }
+        }
+        return score
+    }
+
+    /// Name a team after the tag most of its players share, preferring one typed in capitals
+    /// (a misread like "Daisy" gives "Da"). Players with a different tag are flagged as guessed.
+    private func namedTeam(_ team: Team) -> Team {
+        var counts: [String: (n: Int, caps: Int)] = [:]
+        for m in team.members {
+            let raw = String(m.name.drop { !$0.isLetter && !$0.isNumber }.prefix(tagLength))
+            let t = raw.isEmpty ? "?" : raw.uppercased()
+            var c = counts[t] ?? (0, 0)
+            c.n += 1
+            if raw == t { c.caps += 1 }
+            counts[t] = c
+        }
+        var best = team.tag, bestScore = -1
+        for (t, c) in counts.sorted(by: { $0.key < $1.key }) where c.n * 10 + c.caps > bestScore {
+            bestScore = c.n * 10 + c.caps; best = t
+        }
+        var out = team
+        out.tag = best
+        out.guessed = Set(team.members.filter { tag(for: $0) != best }.map(\.id))
+        return out
+    }
+
     private func mergeLookalikeTags(_ input: [Team]) -> [Team] {
         var teams = input
         var i = 0
@@ -156,6 +214,7 @@ final class ScoreStore: ObservableObject {
                 let members = groups[t]!.sorted { $0.score > $1.score }
                 return Team(tag: t, members: members, total: members.reduce(0) { $0 + $1.score })
             })
+            result = fillShortTeams(result, playerCount: list.count).map { namedTeam($0) }
         }
         return result.sorted { $0.total != $1.total ? $0.total > $1.total : $0.tag < $1.tag }
     }
